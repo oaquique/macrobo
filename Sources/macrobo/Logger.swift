@@ -109,15 +109,16 @@ actor Logger {
         let percent = totalBytes > 0 ? Int(Double(currentBytes) / Double(totalBytes) * 100) : 0
         let currentStr = formatBytes(currentBytes)
         let totalStr = formatBytes(totalBytes)
-        let displayName = truncate(fileName, max: 25)
+        let displayName = truncate(fileName, max: 30)
 
         // Build mini progress bar (15 chars)
         let barWidth = 15
         let filled = Int(Double(barWidth) * Double(percent) / 100.0)
         let bar = String(repeating: "=", count: filled) + ">" + String(repeating: " ", count: max(0, barWidth - filled - 1))
 
-        // Format: "  COPY: filename [======>        ] 45% (1.2/4.5 MB)"
-        let line = String(format: "  COPY: %@ [%@] %3d%% (%@/%@)", displayName, bar, percent, currentStr, totalStr)
+        // Format: "  COPY: [======>        ] 45% filename (1.2/4.5 MB)"
+        // Fixed-width elements first for alignment
+        let line = String(format: "  COPY: [%@] %3d%% %@ (%@/%@)", bar, percent, displayName, currentStr, totalStr)
 
         // Overwrite current line
         print("\r" + line.padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0), terminator: "")
