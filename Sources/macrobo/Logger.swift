@@ -7,12 +7,20 @@ actor Logger {
     private let verbose: Bool
     private let quiet: Bool
     private var fileHandle: FileHandle?
+    private let terminalWidth: Int
 
     init(logFile: URL? = nil, append: Bool = false, verbose: Bool = false, quiet: Bool = false) {
         self.logFile = logFile
         self.appendMode = append
         self.verbose = verbose
         self.quiet = quiet
+        // Get terminal width for truncation
+        var ws = winsize()
+        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 {
+            self.terminalWidth = Int(ws.ws_col)
+        } else {
+            self.terminalWidth = 80
+        }
     }
 
     /// Opens the log file for writing
@@ -90,20 +98,37 @@ actor Logger {
     func logOperation(_ result: FileOperationResult) {
         switch result {
         case .copied(let source, let dest, let bytes):
-            let msg = "COPY: \(source.lastPathComponent) -> \(dest.path) (\(formatBytes(bytes)))"
+            let sizeStr = formatBytes(bytes)
+            let fileName = source.lastPathComponent
+            // Format: "  COPY: filename (size)" - keep it short for console
+            let msg = "COPY: \(truncate(fileName, max: 40)) (\(sizeStr))"
             debug(msg)
+            // Write full path to log file only
+            writeToFile("  COPY: \(source.lastPathComponent) -> \(dest.path) (\(sizeStr))")
         case .skipped(let source, let reason):
-            let msg = "SKIP: \(source.lastPathComponent) (\(reason))"
+            let msg = "SKIP: \(truncate(source.lastPathComponent, max: 40)) (\(reason))"
             debug(msg)
         case .deleted(let path):
-            let msg = "DELETE: \(path.path)"
+            let msg = "DEL: \(truncate(path.lastPathComponent, max: 50))"
             debug(msg)
         case .failed(let path, let error):
-            self.error("\(path.path): \(error.localizedDescription)")
+            self.error("\(truncate(path.lastPathComponent, max: 30)): \(error.localizedDescription)")
         case .directoryCreated(let path):
-            let msg = "MKDIR: \(path.path)"
+            let msg = "MKDIR: \(truncatePath(path.path, max: 50))"
             debug(msg)
         }
+    }
+
+    /// Truncates a string to max length with ellipsis
+    private func truncate(_ str: String, max: Int) -> String {
+        guard str.count > max else { return str }
+        return "..." + str.suffix(max - 3)
+    }
+
+    /// Truncates a path, keeping the end visible
+    private func truncatePath(_ path: String, max: Int) -> String {
+        guard path.count > max else { return path }
+        return "..." + path.suffix(max - 3)
     }
 
     /// Logs the final summary

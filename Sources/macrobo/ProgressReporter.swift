@@ -70,29 +70,25 @@ actor ProgressReporter {
         let bytesPerSec = elapsed > 0 ? Double(processedBytes) / elapsed : 0
 
         // Calculate ETA
-        var eta = ""
+        var eta = "--:--"
         if bytesPerSec > 0 && totalBytes > processedBytes {
             let remainingBytes = totalBytes - processedBytes
             let remainingSecs = Double(remainingBytes) / bytesPerSec
             eta = formatDuration(remainingSecs)
         }
 
-        // Build progress bar
-        let barWidth = max(20, terminalWidth - 50)
+        // Compact progress bar - fixed width of 20 chars
+        let barWidth = 20
         let filled = Int(Double(barWidth) * Double(processedFiles) / Double(totalFiles))
         let bar = String(repeating: "=", count: filled) + String(repeating: " ", count: barWidth - filled)
 
-        // Truncate filename if needed
-        let maxFileLen = 20
-        let displayFile = currentFile.count > maxFileLen
-            ? "..." + currentFile.suffix(maxFileLen - 3)
-            : currentFile
-
-        let line = String(format: "\r[%@] %3.0f%% %@/s ETA:%@ %@",
+        // Format: [===========         ] 45% | 125.3MB/s | ETA 2:34 | 1234/5678 files
+        let line = String(format: "\r[%@] %3.0f%% | %@/s | ETA %@ | %d/%d",
                           bar, percent, formatBytes(UInt64(bytesPerSec)),
-                          eta.isEmpty ? "--:--" : eta, displayFile)
+                          eta, processedFiles, totalFiles)
 
-        print(line.prefix(terminalWidth), terminator: "")
+        // Print progress (overwrite current line)
+        print(String(line.prefix(terminalWidth - 1)).padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0), terminator: "")
         fflush(stdout)
     }
 
@@ -101,20 +97,23 @@ actor ProgressReporter {
 
         let percent = Double(current) / Double(total) * 100
 
-        // Build progress bar for current file
-        let barWidth = max(20, terminalWidth - 50)
+        // Compact progress bar - fixed width of 20 chars
+        let barWidth = 20
         let filled = Int(Double(barWidth) * Double(current) / Double(total))
         let bar = String(repeating: "=", count: filled) + String(repeating: " ", count: barWidth - filled)
 
-        let maxFileLen = 20
+        // Truncate filename
+        let maxFileLen = 25
         let displayFile = currentFile.count > maxFileLen
             ? "..." + currentFile.suffix(maxFileLen - 3)
             : currentFile
 
-        let line = String(format: "\r[%@] %3.0f%% %@/%@ %@",
+        // Format: [===========         ] 45% | 12.3MB/125.0MB | filename.mp3
+        let line = String(format: "\r[%@] %3.0f%% | %@/%@ | %@",
                           bar, percent, formatBytes(current), formatBytes(total), displayFile)
 
-        print(line.prefix(terminalWidth), terminator: "")
+        // Print progress (overwrite current line, pad to clear previous content)
+        print(String(line.prefix(terminalWidth - 1)).padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0), terminator: "")
         fflush(stdout)
     }
 

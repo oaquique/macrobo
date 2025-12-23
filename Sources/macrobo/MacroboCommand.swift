@@ -218,7 +218,8 @@ struct MacroboCommand: AsyncParsableCommand {
             verbose: options.verbose,
             quiet: options.quiet
         )
-        let progress = ProgressReporter(quiet: options.quiet)
+        // In verbose mode, suppress progress bar (file-by-file output is shown instead)
+        let progress = ProgressReporter(quiet: options.quiet || options.verbose)
         let engine = CopyEngine(options: options, logger: logger, progress: progress)
 
         // Print header
