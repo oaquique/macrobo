@@ -308,32 +308,9 @@ actor CopyEngine {
         guard !options.excludeExtra else { return }
 
         let fm = FileManager.default
-        let enumerator = fm.enumerator(
-            at: options.destination,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
-            options: []
-        )
 
-        guard let enumerator = enumerator else { return }
-
-        var filesToDelete: [URL] = []
-        var dirsToDelete: [URL] = []
-
-        for case let url as URL in enumerator {
-            let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
-            let relativePath = url.path.replacingOccurrences(of: resolvedDestPath, with: "")
-            let sourcePath = resolvedSourcePath + relativePath
-            let sourceURL = URL(fileURLWithPath: sourcePath)
-
-            if !fm.fileExists(atPath: sourceURL.path) {
-                if resourceValues?.isDirectory == true {
-                    dirsToDelete.append(url)
-                    enumerator.skipDescendants()
-                } else if resourceValues?.isRegularFile == true {
-                    filesToDelete.append(url)
-                }
-            }
-        }
+        // Gather files to delete (synchronous to avoid Swift 6 warning)
+        let (filesToDelete, dirsToDelete) = gatherFilesToPurge()
 
         // Delete files
         for file in filesToDelete {
@@ -363,5 +340,38 @@ actor CopyEngine {
                 await logger.warning("Failed to delete directory \(dir.path): \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Gathers files and directories to purge (synchronous helper to avoid Swift 6 warning)
+    private nonisolated func gatherFilesToPurge() -> (files: [URL], dirs: [URL]) {
+        let fm = FileManager.default
+        let enumerator = fm.enumerator(
+            at: options.destination,
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+            options: []
+        )
+
+        guard let enumerator = enumerator else { return ([], []) }
+
+        var filesToDelete: [URL] = []
+        var dirsToDelete: [URL] = []
+
+        for case let url as URL in enumerator {
+            let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            let relativePath = url.path.replacingOccurrences(of: resolvedDestPath, with: "")
+            let sourcePath = resolvedSourcePath + relativePath
+            let sourceURL = URL(fileURLWithPath: sourcePath)
+
+            if !fm.fileExists(atPath: sourceURL.path) {
+                if resourceValues?.isDirectory == true {
+                    dirsToDelete.append(url)
+                    enumerator.skipDescendants()
+                } else if resourceValues?.isRegularFile == true {
+                    filesToDelete.append(url)
+                }
+            }
+        }
+
+        return (filesToDelete, dirsToDelete)
     }
 }
