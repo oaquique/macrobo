@@ -102,11 +102,41 @@ actor Logger {
         writeToFile(warningMessage)
     }
 
+    /// Logs progress during a file copy (updates in place)
+    func logFileProgress(fileName: String, currentBytes: UInt64, totalBytes: UInt64) {
+        guard verbose && !quiet else { return }
+
+        let percent = totalBytes > 0 ? Int(Double(currentBytes) / Double(totalBytes) * 100) : 0
+        let currentStr = formatBytes(currentBytes)
+        let totalStr = formatBytes(totalBytes)
+        let displayName = truncate(fileName, max: 25)
+
+        // Build mini progress bar (15 chars)
+        let barWidth = 15
+        let filled = Int(Double(barWidth) * Double(percent) / 100.0)
+        let bar = String(repeating: "=", count: filled) + ">" + String(repeating: " ", count: max(0, barWidth - filled - 1))
+
+        // Format: "  COPY: filename [======>        ] 45% (1.2/4.5 MB)"
+        let line = String(format: "  COPY: %@ [%@] %3d%% (%@/%@)", displayName, bar, percent, currentStr, totalStr)
+
+        // Overwrite current line
+        print("\r" + line.padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0), terminator: "")
+        fflush(stdout)
+    }
+
+    /// Clears the current progress line (call before printing final result)
+    func clearProgressLine() {
+        guard verbose && !quiet else { return }
+        print("\r" + String(repeating: " ", count: terminalWidth - 1) + "\r", terminator: "")
+        fflush(stdout)
+    }
+
     /// Logs a file operation result
     func logOperation(_ result: FileOperationResult) {
         switch result {
         case .copied(let source, let dest, let bytes):
             processedFiles += 1
+            clearProgressLine()
             let sizeStr = formatBytes(bytes)
             let fileName = source.lastPathComponent
             // Format: "  COPY: filename (size) [n/total]"
@@ -125,6 +155,7 @@ actor Logger {
             debug(msg)
         case .failed(let path, let error):
             processedFiles += 1
+            clearProgressLine()
             self.error("\(truncate(path.lastPathComponent, max: 30)): \(error.localizedDescription)")
         case .directoryCreated(let path):
             let msg = "MKDIR: \(truncatePath(path.path, max: 50))"

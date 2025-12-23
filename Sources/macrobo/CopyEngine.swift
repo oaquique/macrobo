@@ -284,6 +284,7 @@ actor CopyEngine {
                     options: options
                 ) { current, total in
                     await self.progress.bytesProgress(current: current, total: total, fileName: source.lastPathComponent)
+                    await self.logger.logFileProgress(fileName: source.lastPathComponent, currentBytes: current, totalBytes: total)
                 }
 
                 // Move mode - delete source after successful copy
