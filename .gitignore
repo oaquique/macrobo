@@ -1,0 +1,20 @@
+# Build artifacts
+.build/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+
+# Package manager
+Package.resolved
+
+# macOS
+.DS_Store
+*.dSYM
+
+# IDE
+.idea/
+*.xcworkspace/
+
+# Partial copy files
+*.macrobo-partial
