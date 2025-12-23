@@ -15,7 +15,7 @@ struct MacroboCommand: AsyncParsableCommand {
               macrobo /source /dest --mirror
               macrobo /source /dest --mirror --threads 16 --exclude-dirs .git node_modules
             """,
-        version: "1.0.0"
+        version: BuildInfo.fullVersion
     )
 
     // MARK: - Positional Arguments
