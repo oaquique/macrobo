@@ -8,6 +8,8 @@ actor Logger {
     private let quiet: Bool
     private var fileHandle: FileHandle?
     private let terminalWidth: Int
+    private var totalFiles: Int = 0
+    private var processedFiles: Int = 0
 
     init(logFile: URL? = nil, append: Bool = false, verbose: Bool = false, quiet: Bool = false) {
         self.logFile = logFile
@@ -21,6 +23,12 @@ actor Logger {
         } else {
             self.terminalWidth = 80
         }
+    }
+
+    /// Sets the total file count for progress display
+    func setTotalFiles(_ total: Int) {
+        self.totalFiles = total
+        self.processedFiles = 0
     }
 
     /// Opens the log file for writing
@@ -98,20 +106,25 @@ actor Logger {
     func logOperation(_ result: FileOperationResult) {
         switch result {
         case .copied(let source, let dest, let bytes):
+            processedFiles += 1
             let sizeStr = formatBytes(bytes)
             let fileName = source.lastPathComponent
-            // Format: "  COPY: filename (size)" - keep it short for console
-            let msg = "COPY: \(truncate(fileName, max: 40)) (\(sizeStr))"
+            // Format: "  COPY: filename (size) [n/total]"
+            let progress = totalFiles > 0 ? " [\(processedFiles)/\(totalFiles)]" : ""
+            let msg = "COPY: \(truncate(fileName, max: 35)) (\(sizeStr))\(progress)"
             debug(msg)
             // Write full path to log file only
             writeToFile("  COPY: \(source.lastPathComponent) -> \(dest.path) (\(sizeStr))")
         case .skipped(let source, let reason):
-            let msg = "SKIP: \(truncate(source.lastPathComponent, max: 40)) (\(reason))"
+            processedFiles += 1
+            let progress = totalFiles > 0 ? " [\(processedFiles)/\(totalFiles)]" : ""
+            let msg = "SKIP: \(truncate(source.lastPathComponent, max: 35)) (\(reason))\(progress)"
             debug(msg)
         case .deleted(let path):
             let msg = "DEL: \(truncate(path.lastPathComponent, max: 50))"
             debug(msg)
         case .failed(let path, let error):
+            processedFiles += 1
             self.error("\(truncate(path.lastPathComponent, max: 30)): \(error.localizedDescription)")
         case .directoryCreated(let path):
             let msg = "MKDIR: \(truncatePath(path.path, max: 50))"

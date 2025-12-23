@@ -54,6 +54,7 @@ actor CopyEngine {
         let totalBytes = filesToCopy.reduce(0) { $0 + (FileOperations.fileSize(at: $1) ?? 0) }
 
         await progress.setTotals(files: filesToCopy.count, bytes: totalBytes)
+        await logger.setTotalFiles(filesToCopy.count)
         await logger.info("Found \(filesToCopy.count) files to process")
 
         // Copy files using thread pool
