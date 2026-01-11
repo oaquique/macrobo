@@ -141,7 +141,8 @@ actor CopyEngine {
 
             if fm.fileExists(atPath: destPath) {
                 // Skip identical files (same size and modification time) - mirrors robocopy's default behavior
-                if FileOperations.areFilesIdentical(source: url, destination: destURL) {
+                // Unless includeSame (/IS) is set, which forces copying even identical files
+                if !options.includeSame && FileOperations.areFilesIdentical(source: url, destination: destURL) {
                     continue
                 }
                 // Skip if destination is newer and excludeOlder is set

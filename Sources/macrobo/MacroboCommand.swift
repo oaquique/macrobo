@@ -54,6 +54,10 @@ struct MacroboCommand: AsyncParsableCommand {
           help: "Don't delete extra files at destination (like robocopy /XX)")
     var excludeExtra = false
 
+    @Flag(name: .customLong("include-same"),
+          help: "Copy files even if identical at destination (like robocopy /IS)")
+    var includeSame = false
+
     // MARK: - Retry Options
 
     @Option(name: [.customShort("r"), .customLong("retry")],
@@ -167,6 +171,7 @@ struct MacroboCommand: AsyncParsableCommand {
         // Comparison options
         options.excludeOlder = excludeOlder
         options.excludeExtra = excludeExtra
+        options.includeSame = includeSame
 
         // Retry options
         options.retryCount = retryCount

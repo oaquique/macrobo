@@ -17,6 +17,7 @@ struct CopyOptions {
     var excludeExtra: Bool = false      // /XX - don't delete extra files in dest
     var excludeChanged: Bool = false    // /XC - exclude changed files
     var excludeNewer: Bool = false      // /XN - exclude newer files
+    var includeSame: Bool = false       // /IS - include same files (force copy even if identical)
 
     // Retry options
     var retryCount: Int = 3          // /R:n
