@@ -50,7 +50,8 @@ actor CopyEngine {
         try ensureDestinationExists()
 
         // Gather files to copy
-        let filesToCopy = try gatherSourceFiles()
+        let filesToCopy = try await gatherSourceFiles()
+        await progress.clear()
         let totalBytes = filesToCopy.reduce(0) { $0 + (FileOperations.fileSize(at: $1) ?? 0) }
 
         await progress.setTotals(files: filesToCopy.count, bytes: totalBytes)
@@ -96,7 +97,59 @@ actor CopyEngine {
     }
 
     /// Gathers all source files to be copied
-    private func gatherSourceFiles() throws -> [URL] {
+    private func gatherSourceFiles() async throws -> [URL] {
+        // First pass: enumerate all candidate files (synchronous)
+        // Run a spinner task in the background during enumeration
+        let spinnerTask = Task {
+            while !Task.isCancelled {
+                await progress.showStatus("Scanning source files...")
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            }
+        }
+        let candidates = try enumerateSourceFiles()
+        spinnerTask.cancel()
+
+        // Second pass: filter files that need copying (with progress updates)
+        var files: [URL] = []
+        var lastUpdateTime = Date()
+        let fm = FileManager.default
+
+        for (index, url) in candidates.enumerated() {
+            // Update progress periodically (every 100ms)
+            let now = Date()
+            if now.timeIntervalSince(lastUpdateTime) >= 0.1 {
+                await progress.updateScanProgress(scanned: index + 1, found: files.count)
+                lastUpdateTime = now
+            }
+
+            // Check if needs copying
+            let relativePath = url.path.replacingOccurrences(of: resolvedSourcePath, with: "")
+            let destPath = resolvedDestPath + relativePath
+            let destURL = URL(fileURLWithPath: destPath)
+
+            if fm.fileExists(atPath: destPath) {
+                // Skip identical files (same size and modification time) - mirrors robocopy's default behavior
+                // Unless includeSame (/IS) is set, which forces copying even identical files
+                if !options.includeSame && FileOperations.areFilesIdentical(source: url, destination: destURL) {
+                    continue
+                }
+                // Skip if destination is newer and excludeOlder is set
+                if options.excludeOlder && !FileOperations.isSourceNewer(source: url, destination: destURL) {
+                    continue
+                }
+            }
+
+            files.append(url)
+        }
+
+        // Final progress update
+        await progress.updateScanProgress(scanned: candidates.count, found: files.count)
+
+        return files
+    }
+
+    /// Enumerates source files synchronously (first pass - no destination checks)
+    private nonisolated func enumerateSourceFiles() throws -> [URL] {
         let fm = FileManager.default
         var files: [URL] = []
 
@@ -104,10 +157,7 @@ actor CopyEngine {
             at: options.source,
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
-        ) { url, error in
-            Task { await self.logger.warning("Error accessing \(url.path): \(error.localizedDescription)") }
-            return true  // Continue enumeration
-        }
+        )
 
         guard let enumerator = enumerator else {
             throw MacroboError.sourceNotFound(options.source.path)
@@ -134,23 +184,6 @@ actor CopyEngine {
             if !shouldIncludeFile(url) { continue }
             if !checkSizeConstraints(url) { continue }
 
-            // Check if needs copying
-            let relativePath = url.path.replacingOccurrences(of: resolvedSourcePath, with: "")
-            let destPath = resolvedDestPath + relativePath
-            let destURL = URL(fileURLWithPath: destPath)
-
-            if fm.fileExists(atPath: destPath) {
-                // Skip identical files (same size and modification time) - mirrors robocopy's default behavior
-                // Unless includeSame (/IS) is set, which forces copying even identical files
-                if !options.includeSame && FileOperations.areFilesIdentical(source: url, destination: destURL) {
-                    continue
-                }
-                // Skip if destination is newer and excludeOlder is set
-                if options.excludeOlder && !FileOperations.isSourceNewer(source: url, destination: destURL) {
-                    continue
-                }
-            }
-
             files.append(url)
         }
 
@@ -158,7 +191,7 @@ actor CopyEngine {
     }
 
     /// Checks if a directory should be excluded
-    private func shouldExcludeDirectory(_ url: URL) -> Bool {
+    private nonisolated func shouldExcludeDirectory(_ url: URL) -> Bool {
         let name = url.lastPathComponent
         for pattern in options.excludeDirectories {
             if matchesPattern(name, pattern: pattern) {
@@ -169,7 +202,7 @@ actor CopyEngine {
     }
 
     /// Checks if a file should be excluded
-    private func shouldExcludeFile(_ url: URL) -> Bool {
+    private nonisolated func shouldExcludeFile(_ url: URL) -> Bool {
         let name = url.lastPathComponent
         for pattern in options.excludeFiles {
             if matchesPattern(name, pattern: pattern) {
@@ -180,7 +213,7 @@ actor CopyEngine {
     }
 
     /// Checks if a file should be included (when include filters are specified)
-    private func shouldIncludeFile(_ url: URL) -> Bool {
+    private nonisolated func shouldIncludeFile(_ url: URL) -> Bool {
         guard !options.includeFiles.isEmpty else { return true }
         let name = url.lastPathComponent
         for pattern in options.includeFiles {
@@ -192,7 +225,7 @@ actor CopyEngine {
     }
 
     /// Checks if file meets size constraints
-    private func checkSizeConstraints(_ url: URL) -> Bool {
+    private nonisolated func checkSizeConstraints(_ url: URL) -> Bool {
         guard options.minFileSize != nil || options.maxFileSize != nil else { return true }
         guard let size = FileOperations.fileSize(at: url) else { return true }
 
@@ -206,7 +239,7 @@ actor CopyEngine {
     }
 
     /// Simple glob pattern matching
-    private func matchesPattern(_ name: String, pattern: String) -> Bool {
+    private nonisolated func matchesPattern(_ name: String, pattern: String) -> Bool {
         // Support basic glob patterns: *, ?
         let regexPattern = pattern
             .replacingOccurrences(of: ".", with: "\\.")

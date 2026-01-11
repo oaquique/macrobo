@@ -11,6 +11,8 @@ actor ProgressReporter {
     private var lastUpdateTime: Date = Date()
     private var currentFile: String = ""
     private let terminalWidth: Int
+    private var spinnerIndex: Int = 0
+    private static let spinnerChars: [Character] = ["|", "/", "-", "\\"]
 
     init(quiet: Bool = false) {
         self.quiet = quiet
@@ -54,6 +56,26 @@ actor ProgressReporter {
     func clear() {
         guard !quiet else { return }
         print("\r\(String(repeating: " ", count: terminalWidth))\r", terminator: "")
+        fflush(stdout)
+    }
+
+    /// Shows a status message with spinner (for scanning phase, etc.)
+    func showStatus(_ message: String) {
+        guard !quiet else { return }
+        spinnerIndex = (spinnerIndex + 1) % Self.spinnerChars.count
+        let spinner = Self.spinnerChars[spinnerIndex]
+        let fullMessage = "\(spinner) \(message)"
+        print("\r\(fullMessage)\(String(repeating: " ", count: max(0, terminalWidth - fullMessage.count - 1)))", terminator: "")
+        fflush(stdout)
+    }
+
+    /// Updates scanning progress with file count and spinner
+    func updateScanProgress(scanned: Int, found: Int) {
+        guard !quiet else { return }
+        spinnerIndex = (spinnerIndex + 1) % Self.spinnerChars.count
+        let spinner = Self.spinnerChars[spinnerIndex]
+        let message = "\(spinner) Scanning: \(scanned) files checked, \(found) to copy..."
+        print("\r\(message)\(String(repeating: " ", count: max(0, terminalWidth - message.count - 1)))", terminator: "")
         fflush(stdout)
     }
 
