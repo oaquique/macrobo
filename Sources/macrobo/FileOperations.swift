@@ -285,6 +285,19 @@ struct FileOperations {
         return sourceDate > destDate
     }
 
+    /// Checks if source and destination are identical (same size and modification time)
+    /// This mirrors robocopy's default behavior of skipping "Same" files
+    static func areFilesIdentical(source: URL, destination: URL) -> Bool {
+        guard let sourceSize = fileSize(at: source),
+              let destSize = fileSize(at: destination),
+              let sourceDate = modificationDate(at: source),
+              let destDate = modificationDate(at: destination) else {
+            return false  // Assume different if we can't determine
+        }
+        // Compare size and modification time (within 1 second tolerance for filesystem differences)
+        return sourceSize == destSize && abs(sourceDate.timeIntervalSince(destDate)) < 1.0
+    }
+
     /// Deletes a file with retry
     static func deleteFile(at url: URL, retryCount: Int = 3, retryWait: Int = 1) async throws {
         var lastError: Error?

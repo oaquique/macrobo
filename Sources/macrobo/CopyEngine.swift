@@ -140,6 +140,10 @@ actor CopyEngine {
             let destURL = URL(fileURLWithPath: destPath)
 
             if fm.fileExists(atPath: destPath) {
+                // Skip identical files (same size and modification time) - mirrors robocopy's default behavior
+                if FileOperations.areFilesIdentical(source: url, destination: destURL) {
+                    continue
+                }
                 // Skip if destination is newer and excludeOlder is set
                 if options.excludeOlder && !FileOperations.isSourceNewer(source: url, destination: destURL) {
                     continue
