@@ -13,6 +13,12 @@ actor ProgressReporter {
     private let terminalWidth: Int
     private var spinnerIndex: Int = 0
     private static let spinnerChars: [Character] = ["|", "/", "-", "\\"]
+    private var twoLineDisplayActive: Bool = false
+
+    // ANSI escape codes
+    private static let moveUp = "\u{1B}[A"
+    private static let moveDown = "\u{1B}[B"
+    private static let clearLine = "\u{1B}[K"
 
     init(quiet: Bool = false) {
         self.quiet = quiet
@@ -31,6 +37,26 @@ actor ProgressReporter {
         self.totalBytes = bytes
         self.startTime = Date()
         self.lastUpdateTime = Date()
+    }
+
+    /// Called when starting to copy a file - initializes two-line display
+    func fileStarted(name: String, bytes: UInt64) {
+        currentFile = name
+
+        guard !quiet, totalFiles > 0 else { return }
+
+        let overallLine = buildOverallProgressLine()
+        let fileLine = buildSimpleFileLine(name: name, bytes: bytes)
+
+        if !twoLineDisplayActive {
+            // Initialize two-line display
+            print("\r\(overallLine)\n\(fileLine)", terminator: "")
+            twoLineDisplayActive = true
+        } else {
+            // Update both lines
+            print("\(Self.moveUp)\r\(overallLine)\(Self.moveDown)\r\(fileLine)", terminator: "")
+        }
+        fflush(stdout)
     }
 
     /// Updates progress with a completed file
@@ -52,10 +78,17 @@ actor ProgressReporter {
         }
     }
 
-    /// Clears the progress line
+    /// Clears the progress lines
     func clear() {
         guard !quiet else { return }
-        print("\r\(String(repeating: " ", count: terminalWidth))\r", terminator: "")
+        let blank = String(repeating: " ", count: terminalWidth)
+        if twoLineDisplayActive {
+            // Clear both lines: move up, clear, move down, clear
+            print("\(Self.moveUp)\r\(blank)\r\(blank)\r", terminator: "")
+            twoLineDisplayActive = false
+        } else {
+            print("\r\(blank)\r", terminator: "")
+        }
         fflush(stdout)
     }
 
@@ -87,6 +120,19 @@ actor ProgressReporter {
     private func updateDisplay() {
         guard !quiet, totalFiles > 0 else { return }
 
+        let overallLine = buildOverallProgressLine()
+
+        if twoLineDisplayActive {
+            // Move up to line 1, print overall, move down, clear line 2
+            print("\(Self.moveUp)\r\(overallLine)\(Self.moveDown)\r\(Self.clearLine)", terminator: "")
+        } else {
+            // Single line mode (between files)
+            print("\r\(overallLine)", terminator: "")
+        }
+        fflush(stdout)
+    }
+
+    private func buildOverallProgressLine() -> String {
         let percent = Double(processedFiles) / Double(totalFiles) * 100
         let elapsed = Date().timeIntervalSince(startTime)
         let bytesPerSec = elapsed > 0 ? Double(processedBytes) / elapsed : 0
@@ -105,18 +151,31 @@ actor ProgressReporter {
         let bar = String(repeating: "=", count: filled) + String(repeating: " ", count: barWidth - filled)
 
         // Format: [===========         ] 45% | 125.3MB/s | ETA 2:34 | 1234/5678 files
-        let line = String(format: "\r[%@] %3.0f%% | %@/s | ETA %@ | %d/%d",
+        let line = String(format: "[%@] %3.0f%% | %@/s | ETA %@ | %d/%d",
                           bar, percent, formatBytes(UInt64(bytesPerSec)),
                           eta, processedFiles, totalFiles)
 
-        // Print progress (overwrite current line)
-        print(String(line.prefix(terminalWidth - 1)).padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0), terminator: "")
-        fflush(stdout)
+        return String(line.prefix(terminalWidth - 1)).padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0)
     }
 
     private func updateDisplayForFile(current: UInt64, total: UInt64) {
         guard !quiet else { return }
 
+        let overallLine = buildOverallProgressLine()
+        let fileLine = buildFileProgressLine(current: current, total: total)
+
+        if !twoLineDisplayActive {
+            // Initialize two-line display: print line 1, newline, then line 2
+            print("\r\(overallLine)\n\(fileLine)", terminator: "")
+            twoLineDisplayActive = true
+        } else {
+            // Update both lines: move up, print line 1, move down, print line 2
+            print("\(Self.moveUp)\r\(overallLine)\(Self.moveDown)\r\(fileLine)", terminator: "")
+        }
+        fflush(stdout)
+    }
+
+    private func buildFileProgressLine(current: UInt64, total: UInt64) -> String {
         let percent = Double(current) / Double(total) * 100
 
         // Compact progress bar - fixed width of 20 chars
@@ -131,12 +190,23 @@ actor ProgressReporter {
             : currentFile
 
         // Format: [===========         ] 45% | 12.3MB/125.0MB | filename.mp3
-        let line = String(format: "\r[%@] %3.0f%% | %@/%@ | %@",
+        let line = String(format: "[%@] %3.0f%% | %@/%@ | %@",
                           bar, percent, formatBytes(current), formatBytes(total), displayFile)
 
-        // Print progress (overwrite current line, pad to clear previous content)
-        print(String(line.prefix(terminalWidth - 1)).padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0), terminator: "")
-        fflush(stdout)
+        return String(line.prefix(terminalWidth - 1)).padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0)
+    }
+
+    private func buildSimpleFileLine(name: String, bytes: UInt64) -> String {
+        // Truncate filename
+        let maxFileLen = 40
+        let displayFile = name.count > maxFileLen
+            ? "..." + name.suffix(maxFileLen - 3)
+            : name
+
+        // Format: Copying: filename.mp3 (1.2MB)
+        let line = "Copying: \(displayFile) (\(formatBytes(bytes)))"
+
+        return String(line.prefix(terminalWidth - 1)).padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0)
     }
 
     private func formatBytes(_ bytes: UInt64) -> String {

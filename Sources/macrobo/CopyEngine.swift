@@ -312,6 +312,10 @@ actor CopyEngine {
             }
         }
 
+        // Get file size and notify progress that we're starting this file
+        let fileSize = FileOperations.fileSize(at: source) ?? 0
+        await progress.fileStarted(name: source.lastPathComponent, bytes: fileSize)
+
         // Copy with retry
         var lastError: Error?
         for attempt in 0..<max(1, options.retryCount) {
