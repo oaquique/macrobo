@@ -229,9 +229,11 @@ struct MacroboCommand: AsyncParsableCommand {
 
         // Print header
         if !quiet {
+            let title = "macrobo - Robust File Copy for macOS (v\(BuildInfo.fullVersion))"
+            let separator = String(repeating: "═", count: title.count)
             print("")
-            print("  macrobo - Robust File Copy for macOS")
-            print("  =====================================")
+            print("  \(title)")
+            print("  \(separator)")
             print("")
         }
 
@@ -249,16 +251,17 @@ struct MacroboCommand: AsyncParsableCommand {
         }
     }
 
-    /// Parses a human-readable size string (e.g., "100M", "1G") to bytes
+    /// Parses a human-readable size string (e.g., "100M", "1G") using macOS decimal units
     private func parseSize(_ sizeStr: String) -> UInt64? {
         let str = sizeStr.uppercased().trimmingCharacters(in: .whitespaces)
         guard !str.isEmpty else { return nil }
 
+        // Use decimal (base 1000) to match macOS conventions
         let multipliers: [Character: UInt64] = [
-            "K": 1024,
-            "M": 1024 * 1024,
-            "G": 1024 * 1024 * 1024,
-            "T": 1024 * 1024 * 1024 * 1024
+            "K": 1_000,
+            "M": 1_000_000,
+            "G": 1_000_000_000,
+            "T": 1_000_000_000_000
         ]
 
         if let lastChar = str.last, let multiplier = multipliers[lastChar] {

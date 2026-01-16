@@ -1,5 +1,12 @@
 import Foundation
 
+/// File info with size and relative path captured during enumeration
+struct FileInfo: Sendable {
+    let url: URL
+    let size: UInt64
+    let relativePath: String  // Path relative to source root
+}
+
 /// Core copy engine with multi-threaded file operations
 actor CopyEngine {
     private let options: CopyOptions
@@ -49,17 +56,28 @@ actor CopyEngine {
         // Create destination if needed
         try ensureDestinationExists()
 
-        // Gather files to copy
+        // Gather files to copy (with sizes captured during enumeration)
         let filesToCopy = try await gatherSourceFiles()
         await progress.clear()
-        let totalBytes = filesToCopy.reduce(0) { $0 + (FileOperations.fileSize(at: $1) ?? 0) }
+        let totalBytes = filesToCopy.reduce(UInt64(0)) { $0 + $1.size }
+
+        // Print summary line after scanning
+        if !options.quiet {
+            print("Copying \(filesToCopy.count) files (\(formatBytes(totalBytes)))...")
+        }
 
         await progress.setTotals(files: filesToCopy.count, bytes: totalBytes)
         await logger.setTotalFiles(filesToCopy.count)
-        await logger.info("Found \(filesToCopy.count) files to process")
+
+        // Begin progress display phase - suppress inline errors
+        await logger.beginProgressDisplay()
 
         // Copy files using thread pool
         await copyFiles(filesToCopy)
+
+        // End progress display - flush any buffered errors
+        await progress.finish()
+        await logger.endProgressDisplay()
 
         // Handle purge/mirror - delete extra files in destination
         if options.mirror || options.purge {
@@ -68,7 +86,6 @@ actor CopyEngine {
 
         // Finish up
         result.finish()
-        await progress.finish()
         await logger.logSummary(result)
 
         return result
@@ -96,25 +113,48 @@ actor CopyEngine {
         }
     }
 
-    /// Gathers all source files to be copied
-    private func gatherSourceFiles() async throws -> [URL] {
-        // First pass: enumerate all candidate files (synchronous)
-        // Run a spinner task in the background during enumeration
+    /// Gathers all source files to be copied (with sizes)
+    private func gatherSourceFiles() async throws -> [FileInfo] {
+        // First pass: enumerate all candidate files
+        // Run enumeration in background thread so spinner can update
+        let sourceURL = options.source
+        let skipHidden = true
+        let excludeDirs = options.excludeDirectories
+        let excludeFilesPatterns = options.excludeFiles
+        let includeFilesPatterns = options.includeFiles
+        let minSize = options.minFileSize
+        let maxSize = options.maxFileSize
+
+        // Start spinner task
         let spinnerTask = Task {
             while !Task.isCancelled {
                 await progress.showStatus("Scanning source files...")
                 try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
         }
-        let candidates = try enumerateSourceFiles()
+
+        // Run enumeration in detached task to allow spinner to run
+        let candidates = try await Task.detached {
+            try Self.enumerateSourceFilesSync(
+                source: sourceURL,
+                skipHidden: skipHidden,
+                excludeDirs: excludeDirs,
+                excludeFiles: excludeFilesPatterns,
+                includeFiles: includeFilesPatterns,
+                minSize: minSize,
+                maxSize: maxSize
+            )
+        }.value
+
         spinnerTask.cancel()
 
         // Second pass: filter files that need copying (with progress updates)
-        var files: [URL] = []
+        var files: [FileInfo] = []
         var lastUpdateTime = Date()
         let fm = FileManager.default
+        let destBase = options.destination.path
 
-        for (index, url) in candidates.enumerated() {
+        for (index, fileInfo) in candidates.enumerated() {
             // Update progress periodically (every 100ms)
             let now = Date()
             if now.timeIntervalSince(lastUpdateTime) >= 0.1 {
@@ -122,24 +162,23 @@ actor CopyEngine {
                 lastUpdateTime = now
             }
 
-            // Check if needs copying
-            let relativePath = url.path.replacingOccurrences(of: resolvedSourcePath, with: "")
-            let destPath = resolvedDestPath + relativePath
+            // Build destination path using the captured relative path
+            let destPath = destBase + fileInfo.relativePath
             let destURL = URL(fileURLWithPath: destPath)
 
             if fm.fileExists(atPath: destPath) {
                 // Skip identical files (same size and modification time) - mirrors robocopy's default behavior
                 // Unless includeSame (/IS) is set, which forces copying even identical files
-                if !options.includeSame && FileOperations.areFilesIdentical(source: url, destination: destURL) {
+                if !options.includeSame && FileOperations.areFilesIdentical(source: fileInfo.url, destination: destURL) {
                     continue
                 }
                 // Skip if destination is newer and excludeOlder is set
-                if options.excludeOlder && !FileOperations.isSourceNewer(source: url, destination: destURL) {
+                if options.excludeOlder && !FileOperations.isSourceNewer(source: fileInfo.url, destination: destURL) {
                     continue
                 }
             }
 
-            files.append(url)
+            files.append(fileInfo)
         }
 
         // Final progress update
@@ -148,28 +187,48 @@ actor CopyEngine {
         return files
     }
 
-    /// Enumerates source files synchronously (first pass - no destination checks)
-    private nonisolated func enumerateSourceFiles() throws -> [URL] {
+    /// Enumerates source files synchronously (static version for background execution)
+    private static func enumerateSourceFilesSync(
+        source: URL,
+        skipHidden: Bool,
+        excludeDirs: [String],
+        excludeFiles: [String],
+        includeFiles: [String],
+        minSize: UInt64?,
+        maxSize: UInt64?
+    ) throws -> [FileInfo] {
         let fm = FileManager.default
-        var files: [URL] = []
+        var files: [FileInfo] = []
+
+        // Standardize source path for consistent relative path calculation
+        let sourcePathStandardized = source.standardizedFileURL.path
+
+        var enumeratorOptions: FileManager.DirectoryEnumerationOptions = []
+        if skipHidden {
+            enumeratorOptions.insert(.skipsHiddenFiles)
+        }
 
         let enumerator = fm.enumerator(
-            at: options.source,
+            at: source,
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            options: enumeratorOptions
         )
 
         guard let enumerator = enumerator else {
-            throw MacroboError.sourceNotFound(options.source.path)
+            throw MacroboError.sourceNotFound(source.path)
         }
 
         for case let url as URL in enumerator {
-            // Check if directory
-            let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            // Get resource values including size
+            let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
 
             if resourceValues?.isDirectory == true {
                 // Skip excluded directories
-                if shouldExcludeDirectory(url) {
+                let dirName = url.lastPathComponent
+                let shouldSkip = excludeDirs.contains { pattern in
+                    matchesPatternStatic(dirName, pattern: pattern)
+                }
+                if shouldSkip {
                     enumerator.skipDescendants()
                     continue
                 }
@@ -179,15 +238,58 @@ actor CopyEngine {
             // Skip non-regular files
             guard resourceValues?.isRegularFile == true else { continue }
 
-            // Apply filters
-            if shouldExcludeFile(url) { continue }
-            if !shouldIncludeFile(url) { continue }
-            if !checkSizeConstraints(url) { continue }
+            let fileName = url.lastPathComponent
 
-            files.append(url)
+            // Check exclude patterns
+            let shouldExclude = excludeFiles.contains { pattern in
+                matchesPatternStatic(fileName, pattern: pattern)
+            }
+            if shouldExclude { continue }
+
+            // Check include patterns (if specified)
+            if !includeFiles.isEmpty {
+                let shouldInclude = includeFiles.contains { pattern in
+                    matchesPatternStatic(fileName, pattern: pattern)
+                }
+                if !shouldInclude { continue }
+            }
+
+            // Check size constraints
+            let fileSize = UInt64(resourceValues?.fileSize ?? 0)
+            let actualSize = fileSize > 0 ? fileSize : (FileOperations.fileSize(at: url) ?? 0)
+
+            if let min = minSize, actualSize < min { continue }
+            if let max = maxSize, actualSize > max { continue }
+
+            // Calculate relative path by removing source prefix
+            let urlPathStandardized = url.standardizedFileURL.path
+            let relativePath: String
+            if urlPathStandardized.hasPrefix(sourcePathStandardized) {
+                relativePath = String(urlPathStandardized.dropFirst(sourcePathStandardized.count))
+            } else {
+                // Fallback: just use the last path component
+                relativePath = "/" + url.lastPathComponent
+            }
+
+            files.append(FileInfo(url: url, size: actualSize, relativePath: relativePath))
         }
 
         return files
+    }
+
+    /// Static pattern matching for use in detached tasks
+    private static func matchesPatternStatic(_ name: String, pattern: String) -> Bool {
+        let regexPattern = pattern
+            .replacingOccurrences(of: ".", with: "\\.")
+            .replacingOccurrences(of: "*", with: ".*")
+            .replacingOccurrences(of: "?", with: ".")
+
+        guard let regex = try? NSRegularExpression(pattern: "^\(regexPattern)$", options: .caseInsensitive) else {
+            return name.lowercased() == pattern.lowercased()
+        }
+
+        let range = NSRange(name.startIndex..., in: name)
+        return regex.firstMatch(in: name, range: range) != nil
     }
 
     /// Checks if a directory should be excluded
@@ -255,17 +357,17 @@ actor CopyEngine {
     }
 
     /// Copies files using a thread pool
-    private func copyFiles(_ files: [URL]) async {
+    private func copyFiles(_ files: [FileInfo]) async {
         await withTaskGroup(of: FileOperationResult.self) { group in
             var pendingFiles = files[...]
             var activeTasks = 0
 
             // Start initial batch
             while activeTasks < options.threadCount && !pendingFiles.isEmpty {
-                let file = pendingFiles.removeFirst()
+                let fileInfo = pendingFiles.removeFirst()
                 activeTasks += 1
                 group.addTask {
-                    await self.copyFile(file)
+                    await self.copyFile(fileInfo)
                 }
             }
 
@@ -274,15 +376,23 @@ actor CopyEngine {
                 result.record(opResult)
                 await logger.logOperation(opResult)
 
-                if case .copied(let source, _, let bytes) = opResult {
+                // Update progress for both successful and failed files
+                switch opResult {
+                case .copied(let source, _, let bytes):
                     await progress.fileCompleted(name: source.lastPathComponent, bytes: bytes)
+                case .failed(let path, _):
+                    await progress.fileFailed(name: path.lastPathComponent)
+                case .skipped(let source, _):
+                    await progress.fileFailed(name: source.lastPathComponent)
+                default:
+                    break
                 }
 
                 // Add next file if available
                 if !pendingFiles.isEmpty {
-                    let file = pendingFiles.removeFirst()
+                    let fileInfo = pendingFiles.removeFirst()
                     group.addTask {
-                        await self.copyFile(file)
+                        await self.copyFile(fileInfo)
                     }
                 }
             }
@@ -290,9 +400,11 @@ actor CopyEngine {
     }
 
     /// Copies a single file with retry support
-    private func copyFile(_ source: URL) async -> FileOperationResult {
-        let relativePath = source.path.replacingOccurrences(of: resolvedSourcePath, with: "")
-        let destPath = resolvedDestPath + relativePath
+    private func copyFile(_ fileInfo: FileInfo) async -> FileOperationResult {
+        let source = fileInfo.url
+        let fileSize = fileInfo.size
+        // Use the pre-computed relative path for destination
+        let destPath = options.destination.path + fileInfo.relativePath
         let destURL = URL(fileURLWithPath: destPath)
 
         // Dry run
@@ -312,8 +424,7 @@ actor CopyEngine {
             }
         }
 
-        // Get file size and notify progress that we're starting this file
-        let fileSize = FileOperations.fileSize(at: source) ?? 0
+        // Notify progress that we're starting this file (use captured size)
         await progress.fileStarted(name: source.lastPathComponent, bytes: fileSize)
 
         // Copy with retry
@@ -416,5 +527,23 @@ actor CopyEngine {
         }
 
         return (filesToDelete, dirsToDelete)
+    }
+
+    /// Format bytes for human-readable display (macOS decimal units)
+    private nonisolated func formatBytes(_ bytes: UInt64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var unitIndex = 0
+
+        while value >= 1000 && unitIndex < units.count - 1 {
+            value /= 1000
+            unitIndex += 1
+        }
+
+        if unitIndex == 0 {
+            return "\(bytes) \(units[unitIndex])"
+        } else {
+            return String(format: "%.1f %@", value, units[unitIndex])
+        }
     }
 }

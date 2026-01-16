@@ -10,6 +10,8 @@ actor Logger {
     private let terminalWidth: Int
     private var totalFiles: Int = 0
     private var processedFiles: Int = 0
+    private var suppressConsoleErrors: Bool = false
+    private var bufferedErrors: [String] = []
 
     init(logFile: URL? = nil, append: Bool = false, verbose: Bool = false, quiet: Bool = false) {
         self.logFile = logFile
@@ -89,8 +91,27 @@ actor Logger {
     /// Logs an error message
     func error(_ message: String) {
         let errorMessage = "ERROR: \(message)"
-        fputs("\(errorMessage)\n", stderr)
+        if suppressConsoleErrors {
+            bufferedErrors.append(errorMessage)
+        } else {
+            fputs("\(errorMessage)\n", stderr)
+        }
         writeToFile(errorMessage)
+    }
+
+    /// Suppresses console error output (buffers them for later)
+    func beginProgressDisplay() {
+        suppressConsoleErrors = true
+        bufferedErrors.removeAll()
+    }
+
+    /// Re-enables console error output and flushes buffered errors
+    func endProgressDisplay() {
+        suppressConsoleErrors = false
+        for error in bufferedErrors {
+            fputs("\(error)\n", stderr)
+        }
+        bufferedErrors.removeAll()
     }
 
     /// Logs a warning message
@@ -192,12 +213,13 @@ actor Logger {
     }
 
     private func formatBytes(_ bytes: UInt64) -> String {
+        // Use macOS decimal units (base 1000)
         let units = ["B", "KB", "MB", "GB", "TB"]
         var value = Double(bytes)
         var unitIndex = 0
 
-        while value >= 1024 && unitIndex < units.count - 1 {
-            value /= 1024
+        while value >= 1000 && unitIndex < units.count - 1 {
+            value /= 1000
             unitIndex += 1
         }
 

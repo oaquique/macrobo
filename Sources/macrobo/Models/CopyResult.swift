@@ -59,57 +59,73 @@ struct CopyResult {
 
     /// Formatted summary string
     var summary: String {
+        let separator = String(repeating: "─", count: 60)
+
+        // Helper to right-align label and add colon (aligns colons at column 25)
+        func row(_ label: String, _ value: String) -> String {
+            let width = 23
+            let padding = String(repeating: " ", count: max(0, width - label.count))
+            return " \(padding)\(label): \(value)"
+        }
+
         var lines: [String] = []
         lines.append("")
-        lines.append(String(repeating: "-", count: 60))
+        lines.append(separator)
         lines.append("                    macrobo Summary")
-        lines.append(String(repeating: "-", count: 60))
-        lines.append("")
-        lines.append("    Directories created: \(directoriesCreated)")
-        if directoriesDeleted > 0 {
-            lines.append("    Directories deleted: \(directoriesDeleted)")
-        }
-        lines.append("")
-        lines.append("          Files copied: \(filesCopied)")
-        lines.append("         Files skipped: \(filesSkipped)")
-        if filesFailed > 0 {
-            lines.append("          Files failed: \(filesFailed)")
-        }
-        if filesDeleted > 0 {
-            lines.append("         Files deleted: \(filesDeleted)")
-        }
-        lines.append("")
-        lines.append("           Bytes copied: \(formatBytes(bytesCopied))")
-        if bytesSkipped > 0 {
-            lines.append("          Bytes skipped: \(formatBytes(bytesSkipped))")
-        }
-        lines.append("                  Speed: \(formatBytes(UInt64(bytesPerSecond)))/s")
-        lines.append("               Duration: \(formatDuration(duration))")
+        lines.append(separator)
         lines.append("")
 
+        // Directories section
+        lines.append(row("Directories created", "\(directoriesCreated)"))
+        if directoriesDeleted > 0 {
+            lines.append(row("Directories deleted", "\(directoriesDeleted)"))
+        }
+        lines.append("")
+
+        // Files section
+        lines.append(row("Files copied", "\(filesCopied)"))
+        lines.append(row("Files skipped", "\(filesSkipped)"))
+        if filesFailed > 0 {
+            lines.append(row("Files failed", "\(filesFailed)"))
+        }
+        if filesDeleted > 0 {
+            lines.append(row("Files deleted", "\(filesDeleted)"))
+        }
+        lines.append("")
+
+        // Stats section
+        lines.append(row("Bytes copied", formatBytes(bytesCopied)))
+        if bytesSkipped > 0 {
+            lines.append(row("Bytes skipped", formatBytes(bytesSkipped)))
+        }
+        lines.append(row("Speed", "\(formatBytes(UInt64(bytesPerSecond)))/s"))
+        lines.append(row("Duration", formatDuration(duration)))
+        lines.append("")
+
+        // Errors section
         if !errors.isEmpty {
-            lines.append("Errors:")
+            lines.append(" Errors:")
             for (path, error) in errors.prefix(10) {
-                lines.append("  \(path): \(error.localizedDescription)")
+                lines.append("   \(path): \(error.localizedDescription)")
             }
             if errors.count > 10 {
-                lines.append("  ... and \(errors.count - 10) more errors")
+                lines.append("   ... and \(errors.count - 10) more errors")
             }
             lines.append("")
         }
 
-        lines.append(String(repeating: "-", count: 60))
+        lines.append(separator)
         return lines.joined(separator: "\n")
     }
 
-    /// Format bytes for human-readable display
+    /// Format bytes for human-readable display (macOS decimal units)
     private func formatBytes(_ bytes: UInt64) -> String {
         let units = ["B", "KB", "MB", "GB", "TB"]
         var value = Double(bytes)
         var unitIndex = 0
 
-        while value >= 1024 && unitIndex < units.count - 1 {
-            value /= 1024
+        while value >= 1000 && unitIndex < units.count - 1 {
+            value /= 1000
             unitIndex += 1
         }
 

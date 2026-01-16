@@ -37,6 +37,8 @@ struct FileOperations {
         // For small files or no resume needed, use simple copy
         if resumeOffset == 0 && sourceSize < UInt64(chunkSize * 2) {
             try await simpleFileCopy(from: source, to: destination, options: options)
+            // Report 100% progress for small files
+            await progressHandler?(sourceSize, sourceSize)
             return sourceSize
         }
 
@@ -108,27 +110,33 @@ struct FileOperations {
             try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
         }
 
-        // Open source for reading
-        guard let sourceHandle = FileHandle(forReadingAtPath: source.path) else {
-            throw MacroboError.copyFailed(source.path, NSError(domain: "macrobo", code: 2, userInfo: [NSLocalizedDescriptionKey: "Cannot open source file"]))
+        // Open source for reading using URL (preserves Unicode encoding)
+        let sourceHandle: FileHandle
+        do {
+            sourceHandle = try FileHandle(forReadingFrom: source)
+        } catch {
+            throw MacroboError.copyFailed(source.lastPathComponent, error)
         }
         defer { try? sourceHandle.close() }
 
         // Open or create destination
         let destHandle: FileHandle
         if resumeOffset > 0 && fm.fileExists(atPath: partialDest.path) {
-            guard let handle = FileHandle(forWritingAtPath: partialDest.path) else {
-                throw MacroboError.copyFailed(partialDest.path, NSError(domain: "macrobo", code: 3, userInfo: [NSLocalizedDescriptionKey: "Cannot open partial file"]))
+            do {
+                destHandle = try FileHandle(forWritingTo: partialDest)
+                try destHandle.seek(toOffset: resumeOffset)
+                try sourceHandle.seek(toOffset: resumeOffset)
+            } catch {
+                throw MacroboError.copyFailed(partialDest.lastPathComponent, error)
             }
-            destHandle = handle
-            try destHandle.seek(toOffset: resumeOffset)
-            try sourceHandle.seek(toOffset: resumeOffset)
         } else {
+            // Create empty file first
             fm.createFile(atPath: partialDest.path, contents: nil)
-            guard let handle = FileHandle(forWritingAtPath: partialDest.path) else {
-                throw MacroboError.copyFailed(partialDest.path, NSError(domain: "macrobo", code: 4, userInfo: [NSLocalizedDescriptionKey: "Cannot create partial file"]))
+            do {
+                destHandle = try FileHandle(forWritingTo: partialDest)
+            } catch {
+                throw MacroboError.copyFailed(partialDest.lastPathComponent, error)
             }
-            destHandle = handle
         }
         defer { try? destHandle.close() }
 
