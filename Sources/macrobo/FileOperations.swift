@@ -140,16 +140,20 @@ struct FileOperations {
         }
         defer { try? destHandle.close() }
 
-        // Copy in chunks
+        // Copy in chunks using modern Swift-throwing APIs
+        // Note: The legacy readData(ofLength:) and write(_:) throw NSExceptions
+        // which Swift cannot catch. Using read(upToCount:) and write(contentsOf:)
+        // throws Swift errors that we can properly handle.
         var totalWritten = resumeOffset
         while true {
-            autoreleasepool {
-                let chunk = sourceHandle.readData(ofLength: chunkSize)
-                if chunk.isEmpty {
-                    return
+            do {
+                guard let chunk = try sourceHandle.read(upToCount: chunkSize), !chunk.isEmpty else {
+                    break
                 }
-                destHandle.write(chunk)
+                try destHandle.write(contentsOf: chunk)
                 totalWritten += UInt64(chunk.count)
+            } catch {
+                throw MacroboError.copyFailed(source.lastPathComponent, error)
             }
 
             await progressHandler?(totalWritten, sourceSize)
