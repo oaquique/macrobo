@@ -167,7 +167,7 @@ actor Logger {
             debug(msg)
             // Write full path to log file only
             writeToFile("  COPY: \(source.lastPathComponent) -> \(dest.path) (\(sizeStr))")
-        case .skipped(let source, let reason):
+        case .skipped(let source, let reason, _):
             processedFiles += 1
             let progress = totalFiles > 0 ? " [\(processedFiles)/\(totalFiles)]" : ""
             let msg = "SKIP: \(truncate(source.lastPathComponent, max: 35)) (\(reason))\(progress)"

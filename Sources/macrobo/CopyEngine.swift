@@ -41,54 +41,59 @@ actor CopyEngine {
         // Validate options
         try options.validate()
 
-        // Open logger
+        // Open logger - ensure it's always closed, even on error
         try await logger.open()
-        defer { Task { await logger.close() } }
 
-        // Log start
-        await logger.info("Source: \(options.source.path)")
-        await logger.info("Destination: \(options.destination.path)")
-        if options.mirror {
-            await logger.info("Mode: Mirror (copy + purge)")
+        do {
+            // Log start
+            await logger.info("Source: \(options.source.path)")
+            await logger.info("Destination: \(options.destination.path)")
+            if options.mirror {
+                await logger.info("Mode: Mirror (copy + purge)")
+            }
+            await logger.info("")
+
+            // Create destination if needed
+            try ensureDestinationExists()
+
+            // Gather files to copy (with sizes captured during enumeration)
+            let filesToCopy = try await gatherSourceFiles()
+            await progress.clear()
+            let totalBytes = filesToCopy.reduce(UInt64(0)) { $0 + $1.size }
+
+            // Print summary line after scanning
+            if !options.quiet {
+                print("Copying \(filesToCopy.count) files (\(formatBytes(totalBytes)))...")
+            }
+
+            await progress.setTotals(files: filesToCopy.count, bytes: totalBytes)
+            await logger.setTotalFiles(filesToCopy.count)
+
+            // Begin progress display phase - suppress inline errors
+            await logger.beginProgressDisplay()
+
+            // Copy files using thread pool
+            await copyFiles(filesToCopy)
+
+            // End progress display - flush any buffered errors
+            await progress.finish()
+            await logger.endProgressDisplay()
+
+            // Handle purge/mirror - delete extra files in destination
+            if options.mirror || options.purge {
+                await purgeExtraFiles()
+            }
+
+            // Finish up
+            result.finish()
+            await logger.logSummary(result)
+            await logger.close()
+
+            return result
+        } catch {
+            await logger.close()
+            throw error
         }
-        await logger.info("")
-
-        // Create destination if needed
-        try ensureDestinationExists()
-
-        // Gather files to copy (with sizes captured during enumeration)
-        let filesToCopy = try await gatherSourceFiles()
-        await progress.clear()
-        let totalBytes = filesToCopy.reduce(UInt64(0)) { $0 + $1.size }
-
-        // Print summary line after scanning
-        if !options.quiet {
-            print("Copying \(filesToCopy.count) files (\(formatBytes(totalBytes)))...")
-        }
-
-        await progress.setTotals(files: filesToCopy.count, bytes: totalBytes)
-        await logger.setTotalFiles(filesToCopy.count)
-
-        // Begin progress display phase - suppress inline errors
-        await logger.beginProgressDisplay()
-
-        // Copy files using thread pool
-        await copyFiles(filesToCopy)
-
-        // End progress display - flush any buffered errors
-        await progress.finish()
-        await logger.endProgressDisplay()
-
-        // Handle purge/mirror - delete extra files in destination
-        if options.mirror || options.purge {
-            await purgeExtraFiles()
-        }
-
-        // Finish up
-        result.finish()
-        await logger.logSummary(result)
-
-        return result
     }
 
     /// Ensures the destination directory exists
@@ -187,6 +192,24 @@ actor CopyEngine {
         return files
     }
 
+    /// Compiles a glob pattern (*, ?) into a pre-compiled NSRegularExpression
+    private static func compileGlobPattern(_ pattern: String) -> NSRegularExpression? {
+        let regexPattern = pattern
+            .replacingOccurrences(of: ".", with: "\\.")
+            .replacingOccurrences(of: "*", with: ".*")
+            .replacingOccurrences(of: "?", with: ".")
+        return try? NSRegularExpression(pattern: "^\(regexPattern)$", options: .caseInsensitive)
+    }
+
+    /// Checks if a name matches a pre-compiled regex, with fallback to case-insensitive string comparison
+    private static func matches(_ name: String, regex: NSRegularExpression?, fallbackPattern: String) -> Bool {
+        guard let regex = regex else {
+            return name.lowercased() == fallbackPattern.lowercased()
+        }
+        let range = NSRange(name.startIndex..., in: name)
+        return regex.firstMatch(in: name, range: range) != nil
+    }
+
     /// Enumerates source files synchronously (static version for background execution)
     private static func enumerateSourceFilesSync(
         source: URL,
@@ -199,6 +222,11 @@ actor CopyEngine {
     ) throws -> [FileInfo] {
         let fm = FileManager.default
         var files: [FileInfo] = []
+
+        // Pre-compile all glob patterns once (instead of per-file)
+        let excludeDirRegexes = excludeDirs.map { (pattern: $0, regex: compileGlobPattern($0)) }
+        let excludeFileRegexes = excludeFiles.map { (pattern: $0, regex: compileGlobPattern($0)) }
+        let includeFileRegexes = includeFiles.map { (pattern: $0, regex: compileGlobPattern($0)) }
 
         // Standardize source path for consistent relative path calculation
         let sourcePathStandardized = source.standardizedFileURL.path
@@ -225,9 +253,7 @@ actor CopyEngine {
             if resourceValues?.isDirectory == true {
                 // Skip excluded directories
                 let dirName = url.lastPathComponent
-                let shouldSkip = excludeDirs.contains { pattern in
-                    matchesPatternStatic(dirName, pattern: pattern)
-                }
+                let shouldSkip = excludeDirRegexes.contains { matches(dirName, regex: $0.regex, fallbackPattern: $0.pattern) }
                 if shouldSkip {
                     enumerator.skipDescendants()
                     continue
@@ -241,16 +267,12 @@ actor CopyEngine {
             let fileName = url.lastPathComponent
 
             // Check exclude patterns
-            let shouldExclude = excludeFiles.contains { pattern in
-                matchesPatternStatic(fileName, pattern: pattern)
-            }
+            let shouldExclude = excludeFileRegexes.contains { matches(fileName, regex: $0.regex, fallbackPattern: $0.pattern) }
             if shouldExclude { continue }
 
             // Check include patterns (if specified)
-            if !includeFiles.isEmpty {
-                let shouldInclude = includeFiles.contains { pattern in
-                    matchesPatternStatic(fileName, pattern: pattern)
-                }
+            if !includeFileRegexes.isEmpty {
+                let shouldInclude = includeFileRegexes.contains { matches(fileName, regex: $0.regex, fallbackPattern: $0.pattern) }
                 if !shouldInclude { continue }
             }
 
@@ -277,88 +299,9 @@ actor CopyEngine {
         return files
     }
 
-    /// Static pattern matching for use in detached tasks
-    private static func matchesPatternStatic(_ name: String, pattern: String) -> Bool {
-        let regexPattern = pattern
-            .replacingOccurrences(of: ".", with: "\\.")
-            .replacingOccurrences(of: "*", with: ".*")
-            .replacingOccurrences(of: "?", with: ".")
-
-        guard let regex = try? NSRegularExpression(pattern: "^\(regexPattern)$", options: .caseInsensitive) else {
-            return name.lowercased() == pattern.lowercased()
-        }
-
-        let range = NSRange(name.startIndex..., in: name)
-        return regex.firstMatch(in: name, range: range) != nil
-    }
-
-    /// Checks if a directory should be excluded
-    private nonisolated func shouldExcludeDirectory(_ url: URL) -> Bool {
-        let name = url.lastPathComponent
-        for pattern in options.excludeDirectories {
-            if matchesPattern(name, pattern: pattern) {
-                return true
-            }
-        }
-        return false
-    }
-
-    /// Checks if a file should be excluded
-    private nonisolated func shouldExcludeFile(_ url: URL) -> Bool {
-        let name = url.lastPathComponent
-        for pattern in options.excludeFiles {
-            if matchesPattern(name, pattern: pattern) {
-                return true
-            }
-        }
-        return false
-    }
-
-    /// Checks if a file should be included (when include filters are specified)
-    private nonisolated func shouldIncludeFile(_ url: URL) -> Bool {
-        guard !options.includeFiles.isEmpty else { return true }
-        let name = url.lastPathComponent
-        for pattern in options.includeFiles {
-            if matchesPattern(name, pattern: pattern) {
-                return true
-            }
-        }
-        return false
-    }
-
-    /// Checks if file meets size constraints
-    private nonisolated func checkSizeConstraints(_ url: URL) -> Bool {
-        guard options.minFileSize != nil || options.maxFileSize != nil else { return true }
-        guard let size = FileOperations.fileSize(at: url) else { return true }
-
-        if let minSize = options.minFileSize, size < minSize {
-            return false
-        }
-        if let maxSize = options.maxFileSize, size > maxSize {
-            return false
-        }
-        return true
-    }
-
-    /// Simple glob pattern matching
-    private nonisolated func matchesPattern(_ name: String, pattern: String) -> Bool {
-        // Support basic glob patterns: *, ?
-        let regexPattern = pattern
-            .replacingOccurrences(of: ".", with: "\\.")
-            .replacingOccurrences(of: "*", with: ".*")
-            .replacingOccurrences(of: "?", with: ".")
-
-        guard let regex = try? NSRegularExpression(pattern: "^\(regexPattern)$", options: .caseInsensitive) else {
-            return name == pattern  // Fallback to exact match
-        }
-
-        let range = NSRange(name.startIndex..., in: name)
-        return regex.firstMatch(in: name, range: range) != nil
-    }
-
     /// Copies files using a thread pool
     private func copyFiles(_ files: [FileInfo]) async {
-        await withTaskGroup(of: FileOperationResult.self) { group in
+        await withTaskGroup(of: (FileOperationResult, String).self) { group in
             var pendingFiles = files[...]
             var activeTasks = 0
 
@@ -367,23 +310,24 @@ actor CopyEngine {
                 let fileInfo = pendingFiles.removeFirst()
                 activeTasks += 1
                 group.addTask {
-                    await self.copyFile(fileInfo)
+                    let result = await self.copyFile(fileInfo)
+                    return (result, fileInfo.relativePath)
                 }
             }
 
             // Process results and add more tasks
-            for await opResult in group {
+            for await (opResult, progressKey) in group {
                 result.record(opResult)
                 await logger.logOperation(opResult)
 
                 // Update progress for both successful and failed files
                 switch opResult {
                 case .copied(let source, _, let bytes):
-                    await progress.fileCompleted(name: source.lastPathComponent, bytes: bytes)
-                case .failed(let path, _):
-                    await progress.fileFailed(name: path.lastPathComponent)
-                case .skipped(let source, _):
-                    await progress.fileFailed(name: source.lastPathComponent)
+                    await progress.fileCompleted(key: progressKey, displayName: source.lastPathComponent, bytes: bytes)
+                case .failed:
+                    await progress.fileFailed(key: progressKey)
+                case .skipped:
+                    await progress.fileFailed(key: progressKey)
                 default:
                     break
                 }
@@ -392,7 +336,8 @@ actor CopyEngine {
                 if !pendingFiles.isEmpty {
                     let fileInfo = pendingFiles.removeFirst()
                     group.addTask {
-                        await self.copyFile(fileInfo)
+                        let result = await self.copyFile(fileInfo)
+                        return (result, fileInfo.relativePath)
                     }
                 }
             }
@@ -409,7 +354,7 @@ actor CopyEngine {
 
         // Dry run
         if options.dryRun {
-            return .skipped(source: source, reason: .dryRun)
+            return .skipped(source: source, reason: .dryRun, bytes: fileSize)
         }
 
         // Create parent directory if needed
@@ -425,18 +370,21 @@ actor CopyEngine {
         }
 
         // Notify progress that we're starting this file (use captured size)
-        await progress.fileStarted(name: source.lastPathComponent, bytes: fileSize)
+        // Use relativePath as unique key to avoid collisions between same-named files in different directories
+        let progressKey = fileInfo.relativePath
+        await progress.fileStarted(key: progressKey, displayName: source.lastPathComponent, bytes: fileSize)
 
         // Copy with retry
         var lastError: Error?
-        for attempt in 0..<max(1, options.retryCount) {
+        let totalAttempts = 1 + options.retryCount  // 1 initial + N retries
+        for attempt in 0..<max(1, totalAttempts) {
             do {
                 let bytes = try await FileOperations.copyFile(
                     from: source,
                     to: destURL,
                     options: options
                 ) { current, total in
-                    await self.progress.bytesProgress(current: current, total: total, fileName: source.lastPathComponent)
+                    await self.progress.bytesProgress(current: current, total: total, key: progressKey)
                     await self.logger.logFileProgress(fileName: source.lastPathComponent, currentBytes: current, totalBytes: total)
                 }
 
@@ -448,7 +396,7 @@ actor CopyEngine {
                 return .copied(source: source, destination: destURL, bytes: bytes)
             } catch {
                 lastError = error
-                if attempt < options.retryCount - 1 {
+                if attempt < totalAttempts - 1 {
                     try? await Task.sleep(nanoseconds: UInt64(options.retryWaitSeconds) * 1_000_000_000)
                 }
             }
@@ -469,7 +417,7 @@ actor CopyEngine {
         // Delete files
         for file in filesToDelete {
             if options.dryRun {
-                result.record(.skipped(source: file, reason: .dryRun))
+                result.record(.skipped(source: file, reason: .dryRun, bytes: FileOperations.fileSize(at: file) ?? 0))
                 continue
             }
             do {
@@ -512,7 +460,12 @@ actor CopyEngine {
 
         for case let url as URL in enumerator {
             let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
-            let relativePath = url.path.replacingOccurrences(of: resolvedDestPath, with: "")
+            let relativePath: String
+            if url.path.hasPrefix(resolvedDestPath) {
+                relativePath = String(url.path.dropFirst(resolvedDestPath.count))
+            } else {
+                relativePath = "/" + url.lastPathComponent
+            }
             let sourcePath = resolvedSourcePath + relativePath
             let sourceURL = URL(fileURLWithPath: sourcePath)
 

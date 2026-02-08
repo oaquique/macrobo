@@ -3,7 +3,7 @@ import Foundation
 /// Result of a single file operation
 enum FileOperationResult {
     case copied(source: URL, destination: URL, bytes: UInt64)
-    case skipped(source: URL, reason: SkipReason)
+    case skipped(source: URL, reason: SkipReason, bytes: UInt64)
     case deleted(path: URL)
     case failed(path: URL, error: Error)
     case directoryCreated(path: URL)
@@ -157,8 +157,9 @@ struct CopyResult {
         case .copied(_, _, let bytes):
             filesCopied += 1
             bytesCopied += bytes
-        case .skipped(_, _):
+        case .skipped(_, _, let bytes):
             filesSkipped += 1
+            bytesSkipped += bytes
         case .deleted(_):
             filesDeleted += 1
         case .failed(let path, let error):

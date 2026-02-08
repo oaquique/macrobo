@@ -7,7 +7,6 @@ struct CopyOptions {
     let destination: URL
 
     // Directory options
-    var includeSubdirectories: Bool = true
     var includeEmptyDirectories: Bool = true
     var mirror: Bool = false  // /MIR - copy + purge
     var purge: Bool = false   // /PURGE - delete dest files not in source
@@ -15,8 +14,6 @@ struct CopyOptions {
     // File comparison
     var excludeOlder: Bool = false      // /XO - only copy if source is newer
     var excludeExtra: Bool = false      // /XX - don't delete extra files in dest
-    var excludeChanged: Bool = false    // /XC - exclude changed files
-    var excludeNewer: Bool = false      // /XN - exclude newer files
     var includeSame: Bool = false       // /IS - include same files (force copy even if identical)
 
     // Retry options

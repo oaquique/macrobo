@@ -313,14 +313,15 @@ struct FileOperations {
     /// Deletes a file with retry
     static func deleteFile(at url: URL, retryCount: Int = 3, retryWait: Int = 1) async throws {
         var lastError: Error?
+        let totalAttempts = 1 + retryCount  // 1 initial + N retries
 
-        for attempt in 0..<max(1, retryCount) {
+        for attempt in 0..<max(1, totalAttempts) {
             do {
                 try FileManager.default.removeItem(at: url)
                 return
             } catch {
                 lastError = error
-                if attempt < retryCount - 1 {
+                if attempt < totalAttempts - 1 {
                     try await Task.sleep(nanoseconds: UInt64(retryWait) * 1_000_000_000)
                 }
             }

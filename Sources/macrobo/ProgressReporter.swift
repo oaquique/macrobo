@@ -86,11 +86,11 @@ actor ProgressReporter {
     }
 
     /// Called when starting to copy a file
-    func fileStarted(name: String, bytes: UInt64) {
+    func fileStarted(key: String, displayName: String, bytes: UInt64) {
         nextFileIndex += 1
-        activeFiles[name] = FileProgress(
+        activeFiles[key] = FileProgress(
             index: nextFileIndex,
-            fileName: name,
+            fileName: displayName,
             totalBytes: bytes,
             copiedBytes: 0,
             startTime: Date()
@@ -99,11 +99,11 @@ actor ProgressReporter {
     }
 
     /// Updates progress during a file copy
-    func bytesProgress(current: UInt64, total: UInt64, fileName: String) {
-        guard var progress = activeFiles[fileName] else { return }
+    func bytesProgress(current: UInt64, total: UInt64, key: String) {
+        guard var progress = activeFiles[key] else { return }
 
         progress.copiedBytes = current
-        activeFiles[fileName] = progress
+        activeFiles[key] = progress
 
         // Throttle display updates to every 100ms
         let now = Date()
@@ -114,27 +114,27 @@ actor ProgressReporter {
     }
 
     /// Updates progress with a completed file
-    func fileCompleted(name: String, bytes: UInt64) {
+    func fileCompleted(key: String, displayName: String, bytes: UInt64) {
         let now = Date()
 
-        if let progress = activeFiles[name] {
+        if let progress = activeFiles[key] {
             let duration = now.timeIntervalSince(progress.startTime)
             let speed = duration > 0.001 ? Double(bytes) / duration : Double(bytes) / 0.001
 
             completedList.append(CompletedFile(
                 index: progress.index,
-                name: name,
+                name: displayName,
                 bytes: bytes,
                 speed: speed,
                 duration: duration
             ))
-            activeFiles.removeValue(forKey: name)
+            activeFiles.removeValue(forKey: key)
         } else {
             // File wasn't tracked, still record completion
             nextFileIndex += 1
             completedList.append(CompletedFile(
                 index: nextFileIndex,
-                name: name,
+                name: displayName,
                 bytes: bytes,
                 speed: 0,
                 duration: 0
@@ -143,14 +143,20 @@ actor ProgressReporter {
 
         completedFiles += 1
         completedBytes += bytes
+
+        // Prune old entries to prevent unbounded memory growth
+        if completedList.count > maxCompletedToShow {
+            completedList.removeFirst(completedList.count - maxCompletedToShow)
+        }
+
         updateDisplay()
     }
 
     /// Removes a failed/skipped file from active display
-    func fileFailed(name: String) {
+    func fileFailed(key: String) {
         // Just remove from active files - don't add to completed list
         // The file count will be tracked by CopyResult
-        activeFiles.removeValue(forKey: name)
+        activeFiles.removeValue(forKey: key)
         completedFiles += 1  // Count as processed for progress purposes
         updateDisplay()
     }
