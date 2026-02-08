@@ -5,9 +5,9 @@ import Foundation
 struct MacroboCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "macrobo",
-        abstract: "Robust file copy utility for macOS (robocopy clone)",
+        abstract: "Fast, multi-threaded file replication tool for macOS",
         discussion: """
-            macrobo is a powerful file copying tool inspired by Windows' robocopy.
+            macrobo is a fast, multi-threaded file replication tool for macOS.
             It supports mirroring, multi-threaded copying, retry on failure, and more.
 
             Examples:
@@ -29,33 +29,33 @@ struct MacroboCommand: AsyncParsableCommand {
     // MARK: - Directory Options
 
     @Flag(name: [.customShort("s"), .customLong("no-empty")],
-          help: "Skip empty directories (like robocopy /S)")
+          help: "Skip empty directories")
     var skipEmptyDirs = false
 
     @Flag(name: [.customShort("e"), .customLong("include-empty")],
-          help: "Include empty directories (like robocopy /E, default)")
+          help: "Include empty directories (default)")
     var includeEmptyDirs = false
 
     @Flag(name: .customLong("mirror"),
-          help: "Mirror mode: copy files and delete extras at destination (like robocopy /MIR)")
+          help: "Mirror mode: copy files and delete extras at destination")
     var mirror = false
 
     @Flag(name: .customLong("purge"),
-          help: "Delete destination files that no longer exist in source (like robocopy /PURGE)")
+          help: "Delete destination files that no longer exist in source")
     var purge = false
 
     // MARK: - File Comparison Options
 
     @Flag(name: .customLong("exclude-older"),
-          help: "Only copy files if source is newer than destination (like robocopy /XO)")
+          help: "Only copy files if source is newer than destination")
     var excludeOlder = false
 
     @Flag(name: .customLong("exclude-extra"),
-          help: "Don't delete extra files at destination (like robocopy /XX)")
+          help: "Don't delete extra files at destination")
     var excludeExtra = false
 
     @Flag(name: .customLong("include-same"),
-          help: "Copy files even if identical at destination (like robocopy /IS)")
+          help: "Copy files even if identical at destination")
     var includeSame = false
 
     // MARK: - Retry Options

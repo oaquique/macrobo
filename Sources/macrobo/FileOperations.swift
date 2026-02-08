@@ -298,7 +298,7 @@ struct FileOperations {
     }
 
     /// Checks if source and destination are identical (same size and modification time)
-    /// This mirrors robocopy's default behavior of skipping "Same" files
+    /// By default, files that are already identical at the destination are skipped
     static func areFilesIdentical(source: URL, destination: URL) -> Bool {
         guard let sourceSize = fileSize(at: source),
               let destSize = fileSize(at: destination),
