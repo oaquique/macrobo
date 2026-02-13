@@ -196,11 +196,24 @@ actor ProgressReporter {
         fflush(stdout)
     }
 
-    /// Finishes progress display - shows final state
+    /// Finishes progress display - clears multi-line display and shows clean final total
     func finish() {
         guard !quiet else { return }
-        updateDisplay()
-        print("")  // Move past the display
+
+        // Clear the entire multi-line progress display
+        if displayLines > 0 {
+            print("\u{1B}[\(displayLines)A", terminator: "")
+            for _ in 0..<displayLines {
+                print("\u{1B}[2K")
+            }
+            print("\u{1B}[\(displayLines)A", terminator: "")
+        }
+
+        // Print just the separator and final total line
+        let separator = String(repeating: "-", count: min(terminalWidth - 1, 80))
+        print("\u{1B}[2K\(separator)")
+        print("\u{1B}[2K\(formatTotalLine(now: Date()))")
+        print("")
         fflush(stdout)
         displayLines = 0
     }
@@ -229,9 +242,11 @@ actor ProgressReporter {
         lines.append(String(repeating: "-", count: min(terminalWidth - 1, 80)))
         lines.append(formatTotalLine(now: now))
 
+        let previousLines = displayLines
+
         // Clear previous display by moving cursor up
-        if displayLines > 0 {
-            print("\u{1B}[\(displayLines)A", terminator: "")
+        if previousLines > 0 {
+            print("\u{1B}[\(previousLines)A", terminator: "")
         }
 
         // Print all lines
@@ -239,6 +254,16 @@ actor ProgressReporter {
             // Truncate to terminal width and clear rest of line
             let truncated = String(line.prefix(terminalWidth - 1))
             print("\u{1B}[2K\(truncated)")
+        }
+
+        // Clear any stale lines left over from a previously taller display
+        let extraLines = previousLines - lines.count
+        if extraLines > 0 {
+            for _ in 0..<extraLines {
+                print("\u{1B}[2K")
+            }
+            // Move cursor back up so it sits right after the new display
+            print("\u{1B}[\(extraLines)A", terminator: "")
         }
 
         displayLines = lines.count
