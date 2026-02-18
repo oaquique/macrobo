@@ -23,9 +23,11 @@ EOF
 
 echo "Building macrobo version 1.0.$BUILD_NUMBER"
 
-# Build release by default, or debug if --debug flag is passed
+# Build release by default, debug with --debug, or universal with --universal
 if [[ "$1" == "--debug" ]]; then
     swift build
+elif [[ "$1" == "--universal" ]]; then
+    swift build -c release --arch arm64 --arch x86_64
 else
     swift build -c release
 fi
