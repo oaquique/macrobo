@@ -6,6 +6,7 @@ struct FileProgress: Sendable {
     let fileName: String
     let totalBytes: UInt64
     var copiedBytes: UInt64 = 0
+    var isSyncing: Bool = false
     let startTime: Date
 
     var percent: Int {
@@ -149,6 +150,14 @@ actor ProgressReporter {
             completedList.removeFirst(completedList.count - maxCompletedToShow)
         }
 
+        updateDisplay()
+    }
+
+    /// Marks an active file as syncing to disk
+    func fileSyncing(key: String) {
+        guard var progress = activeFiles[key] else { return }
+        progress.isSyncing = true
+        activeFiles[key] = progress
         updateDisplay()
     }
 
@@ -301,8 +310,18 @@ actor ProgressReporter {
     }
 
     private func formatActiveLine(_ progress: FileProgress, now: Date) -> String {
-        // Format: [XXX/YYY] filename    XX% [========        ] |  XX.X MiB/s |  XX.X MiB | 00m00s
         let counter = formatCounter(progress.index)
+
+        if progress.isSyncing {
+            // Show syncing status instead of progress bar
+            let stats = "Syncing to disk..."
+            let usedWidth = counterWidth + 1 + stats.count + 1
+            let nameWidth = max(10, terminalWidth - usedWidth)
+            let truncatedName = truncateOrPad(progress.fileName, width: nameWidth)
+            return "\(counter) \(truncatedName) \(stats)"
+        }
+
+        // Format: [XXX/YYY] filename    XX% [========        ] |  XX.X MiB/s |  XX.X MiB | 00m00s
         let pct = String(format: "%3d%%", progress.percent)
         let speed = progress.currentSpeed(at: now)
         let speedStr = formatSpeed(speed)

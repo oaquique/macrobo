@@ -10,7 +10,8 @@ struct FileOperations {
         from source: URL,
         to destination: URL,
         options: CopyOptions,
-        progressHandler: ((UInt64, UInt64) async -> Void)? = nil
+        progressHandler: ((UInt64, UInt64) async -> Void)? = nil,
+        syncHandler: (() async -> Void)? = nil
     ) async throws -> UInt64 {
         let fm = FileManager.default
 
@@ -43,13 +44,17 @@ struct FileOperations {
         }
 
         // Streaming copy with resume support
+        // Only fsync before rename when in move mode (source will be deleted after copy)
+        let needsSync = options.moveFiles || options.moveAll
         try await streamingCopy(
             from: source,
             to: partialURL,
             finalDestination: destination,
             sourceSize: sourceSize,
             resumeOffset: resumeOffset,
-            progressHandler: progressHandler
+            syncBeforeRename: needsSync,
+            progressHandler: progressHandler,
+            syncHandler: syncHandler
         )
 
         // Copy attributes
@@ -100,7 +105,9 @@ struct FileOperations {
         finalDestination: URL,
         sourceSize: UInt64,
         resumeOffset: UInt64,
-        progressHandler: ((UInt64, UInt64) async -> Void)?
+        syncBeforeRename: Bool,
+        progressHandler: ((UInt64, UInt64) async -> Void)?,
+        syncHandler: (() async -> Void)?
     ) async throws {
         let fm = FileManager.default
 
@@ -163,7 +170,10 @@ struct FileOperations {
             }
         }
 
-        try destHandle.synchronize()
+        if syncBeforeRename {
+            await syncHandler?()
+            try destHandle.synchronize()
+        }
 
         // Rename partial to final destination
         if fm.fileExists(atPath: finalDestination.path) {

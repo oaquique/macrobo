@@ -382,11 +382,15 @@ actor CopyEngine {
                 let bytes = try await FileOperations.copyFile(
                     from: source,
                     to: destURL,
-                    options: options
-                ) { current, total in
-                    await self.progress.bytesProgress(current: current, total: total, key: progressKey)
-                    await self.logger.logFileProgress(fileName: source.lastPathComponent, currentBytes: current, totalBytes: total)
-                }
+                    options: options,
+                    progressHandler: { current, total in
+                        await self.progress.bytesProgress(current: current, total: total, key: progressKey)
+                        await self.logger.logFileProgress(fileName: source.lastPathComponent, currentBytes: current, totalBytes: total)
+                    },
+                    syncHandler: {
+                        await self.progress.fileSyncing(key: progressKey)
+                    }
+                )
 
                 // Move mode - delete source after successful copy
                 if options.moveFiles || options.moveAll {
