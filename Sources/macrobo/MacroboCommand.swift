@@ -229,7 +229,7 @@ struct MacroboCommand: AsyncParsableCommand {
 
         // Print header
         if !quiet {
-            let title = "macrobo - Robust File Copy for macOS (v\(BuildInfo.fullVersion))"
+            let title = "macrobo - Multi-threaded File Copy for macOS (v\(BuildInfo.fullVersion))"
             let separator = String(repeating: "═", count: title.count)
             print("")
             print("  \(title)")
