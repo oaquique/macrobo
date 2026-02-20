@@ -29,6 +29,16 @@ After building, copy the release binary to `/usr/local/bin`:
 sudo cp .build/release/macrobo /usr/local/bin/macrobo
 ```
 
+## Code Signing
+
+`build.sh` automatically signs the binary after building. It searches for a signing identity in this order:
+
+1. **Developer ID Application** — preferred, enables notarization and stable TCC identity
+2. **Apple Development** — works for local use
+3. **Ad-hoc** (fallback) — uses a stable bundle identifier (`com.oaquique.macrobo`) but TCC will forget permissions on each rebuild
+
+The entitlements in `macrobo.entitlements` declare network volume access (`com.apple.security.files.network`), which allows macOS TCC to grant persistent access to NFS/SMB shares.
+
 ## Version Scheme
 
 - Format: `1.0.<build>` where `<build>` is the git commit count (`git rev-list --count HEAD`)

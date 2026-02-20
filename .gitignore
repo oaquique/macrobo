@@ -21,3 +21,6 @@ Package.resolved
 
 # Auto-generated build info
 Sources/macrobo/BuildInfo.swift
+
+# Release tarballs
+*.tar.gz
