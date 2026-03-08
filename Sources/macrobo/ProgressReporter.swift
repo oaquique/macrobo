@@ -252,30 +252,36 @@ actor ProgressReporter {
         lines.append(formatTotalLine(now: now))
 
         let previousLines = displayLines
+        // Pad to at least previousLines so the frame size never shrinks mid-render
+        let frameSize = max(lines.count, previousLines)
 
-        // Clear previous display by moving cursor up
+        // Build the entire frame in one buffer to avoid visible flicker
+        var buf = ""
+        // Hide cursor during redraw
+        buf += "\u{1B}[?25l"
+        // Move cursor up to the top of the previous frame
         if previousLines > 0 {
-            print("\u{1B}[\(previousLines)A", terminator: "")
+            buf += "\u{1B}[\(previousLines)A"
         }
-
-        // Print all lines
+        // Render content lines
         for line in lines {
-            // Truncate to terminal width and clear rest of line
             let truncated = String(line.prefix(terminalWidth - 1))
-            print("\u{1B}[2K\(truncated)")
+            buf += "\u{1B}[2K\(truncated)\n"
         }
-
-        // Clear any stale lines left over from a previously taller display
-        let extraLines = previousLines - lines.count
-        if extraLines > 0 {
-            for _ in 0..<extraLines {
-                print("\u{1B}[2K")
-            }
-            // Move cursor back up so it sits right after the new display
-            print("\u{1B}[\(extraLines)A", terminator: "")
+        // Clear any leftover stale lines
+        for _ in lines.count..<frameSize {
+            buf += "\u{1B}[2K\n"
         }
+        // Move cursor back up past the blank padding lines so it sits right after content
+        let padLines = frameSize - lines.count
+        if padLines > 0 {
+            buf += "\u{1B}[\(padLines)A"
+        }
+        // Show cursor again
+        buf += "\u{1B}[?25h"
 
         displayLines = lines.count
+        print(buf, terminator: "")
         fflush(stdout)
     }
 
