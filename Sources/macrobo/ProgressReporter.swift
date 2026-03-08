@@ -233,56 +233,54 @@ actor ProgressReporter {
         guard !quiet, totalFiles > 0 else { return }
 
         let now = Date()
-        var lines: [String] = []
 
-        // Show recent completed files (last N)
+        // Build content lines (completed + active)
+        var contentLines: [String] = []
         let recentCompleted = completedList.suffix(maxCompletedToShow)
         for completed in recentCompleted {
-            lines.append(formatCompletedLine(completed))
+            contentLines.append(formatCompletedLine(completed))
         }
-
-        // Show active files with progress bars
         let sortedActive = activeFiles.values.sorted { $0.index < $1.index }
         for progress in sortedActive {
-            lines.append(formatActiveLine(progress, now: now))
+            contentLines.append(formatActiveLine(progress, now: now))
         }
 
-        // Separator and total line
-        lines.append(String(repeating: "-", count: min(terminalWidth - 1, 80)))
-        lines.append(formatTotalLine(now: now))
+        // Footer is always 2 lines: separator + total
+        let separator = String(repeating: "-", count: min(terminalWidth - 1, 80))
+        let totalLine = formatTotalLine(now: now)
 
-        let previousLines = displayLines
-        // Pad to at least previousLines so the frame size never shrinks mid-render
-        let frameSize = max(lines.count, previousLines)
+        // Frame height never shrinks — pad between content and footer
+        // so the total line stays pinned to the bottom
+        let footerLines = 2
+        let minContentLines = max(contentLines.count, displayLines - footerLines)
+        let frameSize = minContentLines + footerLines
 
-        // Build the entire frame in one buffer to avoid visible flicker
+        // Build the entire frame in one buffer for atomic write
         var buf = ""
-        // Hide cursor during redraw
-        buf += "\u{1B}[?25l"
-        // Move cursor up to the top of the previous frame
-        if previousLines > 0 {
-            buf += "\u{1B}[\(previousLines)A"
+        buf += "\u{1B}[?25l"  // hide cursor
+        if displayLines > 0 {
+            buf += "\u{1B}[\(displayLines)A"  // move to top of previous frame
         }
-        // Render content lines
-        for line in lines {
+        // Content lines
+        for line in contentLines {
             let truncated = String(line.prefix(terminalWidth - 1))
             buf += "\u{1B}[2K\(truncated)\n"
         }
-        // Clear any leftover stale lines
-        for _ in lines.count..<frameSize {
+        // Blank padding between content and footer
+        for _ in contentLines.count..<minContentLines {
             buf += "\u{1B}[2K\n"
         }
-        // Move cursor back up past the blank padding lines so it sits right after content
-        let padLines = frameSize - lines.count
-        if padLines > 0 {
-            buf += "\u{1B}[\(padLines)A"
-        }
-        // Show cursor again
-        buf += "\u{1B}[?25h"
+        // Footer (separator + total) — always at the bottom of the frame
+        buf += "\u{1B}[2K\(separator)\n"
+        buf += "\u{1B}[2K\(String(totalLine.prefix(terminalWidth - 1)))\n"
+        buf += "\u{1B}[?25h"  // show cursor
 
-        displayLines = lines.count
-        print(buf, terminator: "")
-        fflush(stdout)
+        displayLines = frameSize
+
+        // Write atomically via file descriptor to bypass Swift print buffering
+        buf.utf8CString.withUnsafeBufferPointer { ptr in
+            _ = Darwin.write(STDOUT_FILENO, ptr.baseAddress, buf.utf8.count)
+        }
     }
 
     /// Returns the width needed for the counter based on total files
