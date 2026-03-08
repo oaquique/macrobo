@@ -328,11 +328,7 @@ actor ProgressReporter {
         let sizeStr = formatSize(progress.copiedBytes)
         let etaStr = formatTime(progress.eta(at: now))
 
-        // Build progress bar (using # to avoid font ligature issues with ==)
-        let barWidth = 15
-        let filled = Int(Double(barWidth) * Double(progress.percent) / 100.0)
-        let empty = barWidth - filled
-        let bar = "[" + String(repeating: "#", count: filled) + String(repeating: " ", count: empty) + "]"
+        let bar = brailleBar(percent: progress.percent)
 
         // Fixed-width stats section
         let stats = String(format: "%@ %@ | %@ | %@ | %@", pct, bar, speedStr, sizeStr, etaStr)
@@ -362,11 +358,7 @@ actor ProgressReporter {
             etaStr = formatTime(remaining)
         }
 
-        // Build progress bar (using # to avoid font ligature issues)
-        let barWidth = 15
-        let filled = Int(Double(barWidth) * Double(totalPercent) / 100.0)
-        let empty = barWidth - filled
-        let bar = "[" + String(repeating: "#", count: filled) + String(repeating: " ", count: empty) + "]"
+        let bar = brailleBar(percent: totalPercent)
 
         // Fixed-width stats section
         let stats = String(format: "%@ %@ | %@ | %@ | %@", pct, bar, speedStr, sizeStr, etaStr)
@@ -420,6 +412,32 @@ actor ProgressReporter {
             let s = secs % 60
             return String(format: "%02dm%02ds", mins, s)
         }
+    }
+
+    /// Builds a braille-dot progress bar that fills vertically like docker/git pull
+    private func brailleBar(percent: Int, width: Int = 20) -> String {
+        // Braille levels filling bottom-to-top: ⡀ → ⣀ → ⣤ → ⣶ → ⣿
+        let levels: [Character] = ["⡀", "⣀", "⣤", "⣶", "⣿"]
+        let maxLevel = levels.count - 1  // 4
+
+        // Exact fractional position within the bar
+        let progress = Double(percent) / 100.0 * Double(width)
+        let fullCount = Int(progress)
+        let fraction = progress - Double(fullCount)
+
+        var bar = ""
+        for i in 0..<width {
+            if i < fullCount {
+                bar.append(levels[maxLevel])  // ⣿ fully filled
+            } else if i == fullCount {
+                // Transition character based on fraction
+                let level = Int(fraction * Double(maxLevel))
+                bar.append(levels[level])
+            } else {
+                bar.append(levels[0])  // ⡀ empty
+            }
+        }
+        return "[" + bar + "]"
     }
 
     /// Truncate or pad text to exact display width
