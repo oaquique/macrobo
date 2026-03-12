@@ -139,17 +139,23 @@ actor CopyEngine {
         }
 
         // Run enumeration in detached task to allow spinner to run
-        let candidates = try await Task.detached {
-            try Self.enumerateSourceFilesSync(
-                source: sourceURL,
-                skipHidden: skipHidden,
-                excludeDirs: excludeDirs,
-                excludeFiles: excludeFilesPatterns,
-                includeFiles: includeFilesPatterns,
-                minSize: minSize,
-                maxSize: maxSize
-            )
-        }.value
+        let candidates: [FileInfo]
+        do {
+            candidates = try await Task.detached {
+                try Self.enumerateSourceFilesSync(
+                    source: sourceURL,
+                    skipHidden: skipHidden,
+                    excludeDirs: excludeDirs,
+                    excludeFiles: excludeFilesPatterns,
+                    includeFiles: includeFilesPatterns,
+                    minSize: minSize,
+                    maxSize: maxSize
+                )
+            }.value
+        } catch {
+            spinnerTask.cancel()
+            throw error
+        }
 
         spinnerTask.cancel()
 
@@ -158,6 +164,9 @@ actor CopyEngine {
         var lastUpdateTime = Date()
         let fm = FileManager.default
         let destBase = options.destination.path
+        var checksumCount = 0
+        let checksumBatchSize = 100
+        let checksumPauseNs: UInt64 = 500_000_000 // 500ms pause every batch
 
         for (index, fileInfo) in candidates.enumerated() {
             // Update progress periodically (every 100ms)
@@ -198,6 +207,11 @@ actor CopyEngine {
                         }.value
                         spinnerTask.cancel()
                         lastUpdateTime = Date()
+                        checksumCount += 1
+                        // Pause periodically to avoid overwhelming NAS/network volumes
+                        if checksumCount % checksumBatchSize == 0 {
+                            try? await Task.sleep(nanoseconds: checksumPauseNs)
+                        }
                         if identical {
                             continue
                         }
@@ -262,9 +276,13 @@ actor CopyEngine {
             enumeratorOptions.insert(.skipsHiddenFiles)
         }
 
+        // Resolve symlinks in source to detect cycles
+        let resolvedSource = source.resolvingSymlinksInPath()
+        var visitedDirs: Set<String> = [resolvedSource.path]
+
         let enumerator = fm.enumerator(
             at: source,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey],
             options: enumeratorOptions
         )
 
@@ -277,6 +295,14 @@ actor CopyEngine {
             let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
 
             if resourceValues?.isDirectory == true {
+                // Detect symlink cycles by resolving the real path
+                let resolvedDir = url.resolvingSymlinksInPath().path
+                if visitedDirs.contains(resolvedDir) {
+                    enumerator.skipDescendants()
+                    continue
+                }
+                visitedDirs.insert(resolvedDir)
+
                 // Skip excluded directories
                 let dirName = url.lastPathComponent
                 let shouldSkip = excludeDirRegexes.contains { matches(dirName, regex: $0.regex, fallbackPattern: $0.pattern) }
@@ -430,6 +456,12 @@ actor CopyEngine {
                     try? await Task.sleep(nanoseconds: UInt64(options.retryWaitSeconds) * 1_000_000_000)
                 }
             }
+        }
+
+        // Clean up orphaned partial file after all retries exhausted
+        let partialPath = destURL.path + FileOperations.partialSuffix
+        if FileManager.default.fileExists(atPath: partialPath) {
+            try? FileManager.default.removeItem(atPath: partialPath)
         }
 
         return .failed(path: source, error: lastError ?? MacroboError.copyFailed(source.path, NSError(domain: "macrobo", code: 99)))

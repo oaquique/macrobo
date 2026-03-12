@@ -4,7 +4,7 @@ import Foundation
 /// Low-level file operations with support for resumable copies and attribute preservation
 struct FileOperations {
     private static let chunkSize: Int = 1024 * 1024  // 1MB chunks for streaming
-    private static let partialSuffix = ".macrobo-partial"
+    static let partialSuffix = ".macrobo-partial"
 
     /// Copies a file with support for resume and progress reporting
     static func copyFile(
@@ -131,9 +131,17 @@ struct FileOperations {
         let destHandle: FileHandle
         if resumeOffset > 0 && fm.fileExists(atPath: partialDest.path) {
             do {
-                destHandle = try FileHandle(forWritingTo: partialDest)
-                try destHandle.seek(toOffset: resumeOffset)
-                try sourceHandle.seek(toOffset: resumeOffset)
+                let handle = try FileHandle(forWritingTo: partialDest)
+                do {
+                    try handle.seek(toOffset: resumeOffset)
+                    try sourceHandle.seek(toOffset: resumeOffset)
+                } catch {
+                    try? handle.close()
+                    throw MacroboError.copyFailed(partialDest.lastPathComponent, error)
+                }
+                destHandle = handle
+            } catch let error as MacroboError {
+                throw error
             } catch {
                 throw MacroboError.copyFailed(partialDest.lastPathComponent, error)
             }
@@ -308,22 +316,56 @@ struct FileOperations {
         return sourceDate > destDate
     }
 
-    /// Computes SHA256 checksum of a file using streaming reads
-    static func checksumFile(at url: URL) throws -> SHA256Digest {
+    private static let sampleSize = 4096  // 4KB samples for lightweight checksum
+
+    /// Computes a lightweight SHA256 checksum by reading small samples from the first, middle,
+    /// and last 4KB of a file. Total I/O per file is ~12KB regardless of file size, making this
+    /// safe for network volumes. For files smaller than 12KB, reads the entire file.
+    static func checksumFile(at url: URL, fileSize: UInt64? = nil) throws -> SHA256Digest {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
+        let size = fileSize ?? (self.fileSize(at: url) ?? 0)
+        let sample = UInt64(sampleSize)
+
         var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
-            hasher.update(data: chunk)
+
+        // For small files (< 3 samples), just read the whole thing
+        if size <= sample * 3 {
+            while let data = try handle.read(upToCount: sampleSize), !data.isEmpty {
+                hasher.update(data: data)
+            }
+            return hasher.finalize()
         }
+
+        // Read first 4KB
+        if let data = try handle.read(upToCount: sampleSize), !data.isEmpty {
+            hasher.update(data: data)
+        }
+
+        // Seek to middle and read 4KB
+        let middleOffset = (size - sample) / 2
+        try handle.seek(toOffset: middleOffset)
+        if let data = try handle.read(upToCount: sampleSize), !data.isEmpty {
+            hasher.update(data: data)
+        }
+
+        // Seek to end and read last 4KB
+        let endOffset = size - sample
+        try handle.seek(toOffset: endOffset)
+        if let data = try handle.read(upToCount: sampleSize), !data.isEmpty {
+            hasher.update(data: data)
+        }
+
         return hasher.finalize()
     }
 
-    /// Checks if two same-sized files have identical content by comparing checksums
+    /// Checks if two same-sized files have identical content by comparing lightweight checksums.
+    /// Reads first, middle, and last 4KB of each file — ~24KB total I/O per comparison.
     static func areFileContentsIdentical(source: URL, destination: URL) -> Bool {
-        guard let srcHash = try? checksumFile(at: source),
-              let dstHash = try? checksumFile(at: destination) else {
+        let size = fileSize(at: source)
+        guard let srcHash = try? checksumFile(at: source, fileSize: size),
+              let dstHash = try? checksumFile(at: destination, fileSize: size) else {
             return false
         }
         return srcHash == dstHash
