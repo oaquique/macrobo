@@ -15,6 +15,7 @@ struct CopyOptions {
     var excludeOlder: Bool = false      // /XO - only copy if source is newer
     var excludeExtra: Bool = false      // /XX - don't delete extra files in dest
     var includeSame: Bool = false       // /IS - include same files (force copy even if identical)
+    var checksum: Bool = false          // Compare checksums when size matches but timestamps differ
 
     // Retry options
     var retryCount: Int = 3          // /R:n

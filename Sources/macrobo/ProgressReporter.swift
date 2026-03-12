@@ -182,11 +182,18 @@ actor ProgressReporter {
     }
 
     /// Updates scanning progress
-    func updateScanProgress(scanned: Int, found: Int) {
+    func updateScanProgress(scanned: Int, found: Int, checksumming: String? = nil) {
         guard !quiet else { return }
         spinnerIndex = (spinnerIndex + 1) % Self.spinnerChars.count
         let spinner = Self.spinnerChars[spinnerIndex]
-        let message = "\(spinner) Scanning: \(scanned) files checked, \(found) to copy..."
+        var message = "\(spinner) Scanning: \(scanned) files checked, \(found) to copy..."
+        if let name = checksumming {
+            let available = terminalWidth - 1 - message.count - 15 // " checksumming: " prefix
+            if available > 3 {
+                let truncated = name.count > available ? "..." + name.suffix(available - 3) : name
+                message += " checksumming: \(truncated)"
+            }
+        }
         let padded = message.padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0)
         print("\r\(padded)", terminator: "")
         fflush(stdout)

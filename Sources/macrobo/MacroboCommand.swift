@@ -58,6 +58,10 @@ struct MacroboCommand: AsyncParsableCommand {
           help: "Copy files even if identical at destination")
     var includeSame = false
 
+    @Flag(name: [.customShort("c"), .customLong("checksum")],
+          help: "Use checksum to skip files with identical content (slower scan, fewer copies)")
+    var checksum = false
+
     // MARK: - Retry Options
 
     @Option(name: [.customShort("r"), .customLong("retry")],
@@ -172,6 +176,7 @@ struct MacroboCommand: AsyncParsableCommand {
         options.excludeOlder = excludeOlder
         options.excludeExtra = excludeExtra
         options.includeSame = includeSame
+        options.checksum = checksum
 
         // Retry options
         options.retryCount = retryCount

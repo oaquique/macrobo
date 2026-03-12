@@ -177,6 +177,32 @@ actor CopyEngine {
                 if !options.includeSame && FileOperations.areFilesIdentical(source: fileInfo.url, destination: destURL) {
                     continue
                 }
+                // Checksum mode: if size matches but mtime differs, compare file contents
+                if !options.includeSame && options.checksum {
+                    if let srcSize = FileOperations.fileSize(at: fileInfo.url),
+                       let dstSize = FileOperations.fileSize(at: destURL),
+                       srcSize == dstSize {
+                        // Show which file is being checksummed and keep spinner alive
+                        await progress.updateScanProgress(scanned: index + 1, found: files.count, checksumming: fileInfo.url.lastPathComponent)
+                        let scanned = index + 1
+                        let currentFound = files.count
+                        let fileName = fileInfo.url.lastPathComponent
+                        let spinnerTask = Task {
+                            while !Task.isCancelled {
+                                try? await Task.sleep(nanoseconds: 100_000_000)
+                                await self.progress.updateScanProgress(scanned: scanned, found: currentFound, checksumming: fileName)
+                            }
+                        }
+                        let identical = await Task.detached {
+                            FileOperations.areFileContentsIdentical(source: fileInfo.url, destination: destURL)
+                        }.value
+                        spinnerTask.cancel()
+                        lastUpdateTime = Date()
+                        if identical {
+                            continue
+                        }
+                    }
+                }
                 // Skip if destination is newer and excludeOlder is set
                 if options.excludeOlder && !FileOperations.isSourceNewer(source: fileInfo.url, destination: destURL) {
                     continue

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Low-level file operations with support for resumable copies and attribute preservation
@@ -305,6 +306,27 @@ struct FileOperations {
             return true  // Assume source is newer if we can't determine
         }
         return sourceDate > destDate
+    }
+
+    /// Computes SHA256 checksum of a file using streaming reads
+    static func checksumFile(at url: URL) throws -> SHA256Digest {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize()
+    }
+
+    /// Checks if two same-sized files have identical content by comparing checksums
+    static func areFileContentsIdentical(source: URL, destination: URL) -> Bool {
+        guard let srcHash = try? checksumFile(at: source),
+              let dstHash = try? checksumFile(at: destination) else {
+            return false
+        }
+        return srcHash == dstHash
     }
 
     /// Checks if source and destination are identical (same size and modification time)
