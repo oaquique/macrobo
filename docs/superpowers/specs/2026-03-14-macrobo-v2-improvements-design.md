@@ -19,12 +19,15 @@ A four-phase improvement roadmap for macrobo covering performance, reliability, 
 When source and destination are on the same APFS volume, use `clonefile()` for instant copy-on-write clones instead of streaming bytes.
 
 **Implementation:**
-- Before copying, check if source and destination share the same mount point via `statfs()`
-- If same APFS volume, call `clonefile(src, dst, CLONE_NOFOLLOW)`
-- Fall back to normal streaming copy if clonefile fails (cross-volume, non-APFS, etc.)
-- Skip resume logic entirely for clones — they're atomic
+- Before copying, check if source and destination are on the same APFS volume:
+  - Call `statfs()` on both paths and compare `f_fsid` (filesystem ID)
+  - Also verify `f_fstypename == "apfs"` since clonefile only works on APFS
+- Call `Darwin.clonefile(srcCString, dstCString, UInt32(CLONE_NOFOLLOW))` — note this takes C strings, not URLs
+- If destination already exists, remove it first (`clonefile` fails with `EEXIST`)
+- Fall back to normal streaming copy on expected errors: `EXDEV` (cross-device), `ENOTSUP` (not APFS), `EEXIST` (race condition). Report unexpected errors (e.g., `EACCES`) normally
+- Skip resume logic and attribute copying for clones — `clonefile()` is atomic and preserves all metadata (timestamps, permissions, xattrs)
 
-**Location:** `FileOperations.copyFile()` — add a fast path before the streaming logic. CopyEngine doesn't change.
+**Location:** `FileOperations.copyFile()` — add a fast path after determining `sourceSize`, before the resume/partial logic. CopyEngine doesn't change.
 
 **Impact:** Same-volume copies go from minutes to seconds.
 
@@ -43,12 +46,14 @@ Streaming copies pollute the OS page cache with data that won't be re-read. For 
 
 ### 1.3 Deduplicate formatBytes
 
-`formatBytes` is implemented 3 times with minor variations across `CopyEngine`, `Logger`, and `CopyResult`.
+`formatBytes` is implemented 3 times with minor variations across `CopyEngine` (1 decimal), `Logger` (2 decimals), and `CopyResult` (2 decimals). `ProgressReporter` has a 4th variant (`formatSize`) with fixed-width formatting for column alignment.
 
 **Implementation:**
-- Extract to a free function in a new `Formatting.swift`
+- Create `Formatting.swift` with a shared `formatBytes(_:precision:)` free function
 - Signature: `func formatBytes(_ bytes: UInt64, precision: Int = 2) -> String`
-- Replace all three call sites
+- Replace the 3 loop-based implementations in CopyEngine, Logger, and CopyResult
+- `ProgressReporter.formatSize()` keeps its fixed-width variant (different purpose: column alignment)
+- Phase 3.2 later extends this file with additional shared utilities (`formatDuration`, `truncate`, `Terminal.width`)
 
 ---
 
@@ -75,7 +80,7 @@ Currently `enumerateSourceFilesSync()` loads all candidate files into a `[FileIn
 - A producer task runs `FileManager.enumerator`, yielding files into the stream
 - `copyFiles()` consumes the stream, feeding its task group
 - Total counts become estimates until enumeration completes (prefix with `~`)
-- Checksum filtering integrates into the stream pipeline rather than being a separate loop
+- The current two-pass architecture (enumerate all files, then filter) collapses into a single-pass stream — the checksum filtering and batching/pause logic (currently a separate loop in `gatherSourceFiles`) moves into the stream producer
 
 **Trade-off:** Progress display shows approximate totals during enumeration (e.g., `[3/~1,204]`). Same approach as rsync/rclone.
 
@@ -99,14 +104,15 @@ Both `ProgressReporter` and `Logger` cache terminal width at init and never upda
 CopyEngine (564 lines) handles four distinct responsibilities. Extract enumeration into a dedicated `FileEnumerator`:
 
 - `FileEnumerator.enumerate(source:options:) -> [FileInfo]` (or `AsyncStream` after Phase 2.2)
-- Contains `enumerateSourceFilesSync`, `compileGlobPattern`, `matches`, symlink cycle detection
-- CopyEngine drops to ~250 lines focused on orchestration and retry
+- Moves out: `gatherSourceFiles()` (~111 lines), `enumerateSourceFilesSync()` (~98 lines), `compileGlobPattern()`, `matches()`, symlink cycle detection
+- Total extraction: ~230 lines including the scanning spinner logic
+- CopyEngine drops to ~320 lines focused on orchestration, retry, and purge (with `formatBytes` already removed by Phase 1.3)
 
 ### 3.2 Extract Shared Formatting Utilities
 
-Create `Formatting.swift` (~80 lines) containing:
+Extend `Formatting.swift` (created in Phase 1.3) with additional shared utilities (~80 lines total):
 
-- `formatBytes(_:precision:)` — replaces 3 implementations
+- `formatBytes(_:precision:)` — already present from Phase 1.3
 - `formatDuration(_:compact:)` — unifies `CopyResult.formatDuration()` and `ProgressReporter.formatTime()`
 - `truncate(_:maxWidth:ellipsis:pad:)` — replaces `Logger.truncate()`, `Logger.truncatePath()`, `ProgressReporter.truncateOrPad()`
 - `Terminal.width` — static computed property replacing duplicated `ioctl` calls in Logger and ProgressReporter
@@ -133,7 +139,8 @@ Capture `FileManager.default` once per function scope instead of calling it repe
 - Limiter tracks bytes across all threads, introduces `Task.sleep` delays when rate exceeds target
 - Integrates into `streamingCopy()` after each chunk write
 - Value of `0` means unlimited (default)
-- Reuses existing `parseSize()` for parsing the rate value
+- Reuses existing `parseSize()` for parsing the rate value (note: `parseSize` is currently `private` on `MacroboCommand` — will need to move to a shared utility or become `internal` when the test suite needs to test it)
+- With 8 threads writing 1MB chunks, the minimum burst before throttling is ~8MB; the actual throughput will oscillate around the target rate — this is acceptable and matches how rsync's `--bwlimit` behaves
 
 ### 4.2 Config File Support
 
@@ -157,6 +164,9 @@ bwlimit: 30M
 - CLI flags override config file values
 - Search order: explicit `--config` path, then `~/.config/macrobo/<name>.conf`
 - No new dependencies — parse flat `key: value` format manually
+- Multi-value keys (e.g., `exclude-dirs`) use space-separated values on a single line
+- Lines starting with `#` are comments; empty lines are ignored
+- Unknown keys produce a warning and are ignored (not a hard error, for forward compatibility)
 
 ### 4.3 Progress Output Modes
 
@@ -172,6 +182,12 @@ bwlimit: 30M
   ```
 
 **Location:** `ProgressReporter` gets a `mode` enum. In JSON mode, writes NDJSON to stdout instead of ANSI escape codes.
+
+**Flag interactions:**
+- `--progress=bar --verbose`: verbose wins (file-by-file logging, no progress bar — same as current `--verbose` behavior)
+- `--progress=bar --quiet`: quiet wins (no output)
+- `--progress=json --verbose`: JSON mode takes precedence, verbose has no effect
+- `--progress=none`: equivalent to `--quiet` for progress, but log messages still appear
 
 ### 4.4 Verify Mode
 
