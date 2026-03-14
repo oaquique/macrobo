@@ -44,7 +44,23 @@ public actor ProgressReporter {
     private var completedFiles: Int = 0
     private var completedBytes: UInt64 = 0
     private var startTime: Date = Date()
-    private let terminalWidth: Int
+    private var cachedTerminalWidth: Int = 0
+    private var lastWidthCheck: Date = .distantPast
+
+    private var terminalWidth: Int {
+        let now = Date()
+        if now.timeIntervalSince(lastWidthCheck) >= 1.0 {
+            var ws = winsize()
+            if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 {
+                cachedTerminalWidth = Int(ws.ws_col)
+            } else if cachedTerminalWidth == 0 {
+                cachedTerminalWidth = 120
+            }
+            lastWidthCheck = now
+        }
+        return cachedTerminalWidth
+    }
+
     private var spinnerIndex: Int = 0
     private static let spinnerChars: [Character] = ["|", "/", "-", "\\"]
 
@@ -65,12 +81,6 @@ public actor ProgressReporter {
 
     public init(quiet: Bool = false) {
         self.quiet = quiet
-        var ws = winsize()
-        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 {
-            self.terminalWidth = Int(ws.ws_col)
-        } else {
-            self.terminalWidth = 120
-        }
     }
 
     /// Sets the total counts for progress calculation

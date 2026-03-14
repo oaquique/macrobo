@@ -7,7 +7,23 @@ public actor Logger {
     private let verbose: Bool
     private let quiet: Bool
     private var fileHandle: FileHandle?
-    private let terminalWidth: Int
+    private var cachedTerminalWidth: Int = 0
+    private var lastWidthCheck: Date = .distantPast
+
+    private var terminalWidth: Int {
+        let now = Date()
+        if now.timeIntervalSince(lastWidthCheck) >= 1.0 {
+            var ws = winsize()
+            if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 {
+                cachedTerminalWidth = Int(ws.ws_col)
+            } else if cachedTerminalWidth == 0 {
+                cachedTerminalWidth = 80
+            }
+            lastWidthCheck = now
+        }
+        return cachedTerminalWidth
+    }
+
     private var totalFiles: Int = 0
     private var processedFiles: Int = 0
     private var suppressConsoleErrors: Bool = false
@@ -18,13 +34,6 @@ public actor Logger {
         self.appendMode = append
         self.verbose = verbose
         self.quiet = quiet
-        // Get terminal width for truncation
-        var ws = winsize()
-        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 {
-            self.terminalWidth = Int(ws.ws_col)
-        } else {
-            self.terminalWidth = 80
-        }
     }
 
     /// Sets the total file count for progress display
