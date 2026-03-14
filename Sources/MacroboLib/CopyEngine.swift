@@ -342,13 +342,18 @@ public actor CopyEngine {
             if let max = maxSize, actualSize > max { continue }
 
             // Calculate relative path by removing source prefix
-            let urlPathStandardized = url.standardizedFileURL.path
+            let urlResolved = url.resolvingSymlinksInPath().path
+            let sourceResolved = source.resolvingSymlinksInPath().path
             let relativePath: String
-            if urlPathStandardized.hasPrefix(sourcePathStandardized) {
-                relativePath = String(urlPathStandardized.dropFirst(sourcePathStandardized.count))
+            if urlResolved.hasPrefix(sourceResolved) {
+                relativePath = String(urlResolved.dropFirst(sourceResolved.count))
             } else {
-                // Fallback: just use the last path component
-                relativePath = "/" + url.lastPathComponent
+                let urlPathStandardized = url.standardizedFileURL.path
+                if urlPathStandardized.hasPrefix(sourcePathStandardized) {
+                    relativePath = String(urlPathStandardized.dropFirst(sourcePathStandardized.count))
+                } else {
+                    relativePath = "/" + url.lastPathComponent
+                }
             }
 
             files.append(FileInfo(url: url, size: actualSize, relativePath: relativePath))

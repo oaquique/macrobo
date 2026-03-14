@@ -129,6 +129,25 @@ final class CopyEngineTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: dstDir.appendingPathComponent("big.txt").path))
     }
 
+    func testCopyFromSymlinkedParentPath() async throws {
+        // /tmp is a symlink to /private/tmp on macOS, so using /tmp as parent
+        // tests that resolving symlinks produces correct relative paths
+        let tmpBase = URL(fileURLWithPath: "/tmp/macrobo-symlink-test-\(UUID().uuidString)")
+        let tmpSrc = tmpBase.appendingPathComponent("src")
+        let tmpDst = tmpBase.appendingPathComponent("dst")
+        defer { try? FileManager.default.removeItem(at: tmpBase) }
+        try FileManager.default.createDirectory(at: tmpSrc.appendingPathComponent("subdir"), withIntermediateDirectories: true)
+        try Data("from symlink".utf8).write(to: tmpSrc.appendingPathComponent("subdir/nested.txt"))
+        // Pass the /tmp path (unresolved symlink) as source
+        let options = CopyOptions(source: tmpSrc, destination: tmpDst)
+        let result = try await runCopy(options: options)
+        XCTAssertEqual(result.filesCopied, 1)
+        XCTAssertEqual(result.filesFailed, 0)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: tmpDst.appendingPathComponent("subdir/nested.txt").path
+        ))
+    }
+
     func testChecksumSkipsIdenticalContent() async throws {
         createFile("file.txt", in: srcDir, content: "same content")
         var options = CopyOptions(source: srcDir, destination: dstDir)
