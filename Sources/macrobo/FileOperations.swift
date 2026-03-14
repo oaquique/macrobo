@@ -5,6 +5,43 @@ import Foundation
 struct FileOperations {
     private static let chunkSize: Int = 1024 * 1024  // 1MB chunks for streaming
     static let partialSuffix = ".macrobo-partial"
+    private static let nocacheThreshold: UInt64 = 10 * 1024 * 1024  // 10MB
+
+    /// Checks if two paths are on the same APFS volume using URL resource values
+    static func isSameAPFSVolume(source: String, destination: String) -> Bool {
+        let srcURL = URL(fileURLWithPath: source)
+        let dstDir = (destination as NSString).deletingLastPathComponent
+        let dstURL = URL(fileURLWithPath: dstDir)
+        let keys: Set<URLResourceKey> = [.volumeIdentifierKey, .volumeLocalizedFormatDescriptionKey]
+        guard let srcVals = try? srcURL.resourceValues(forKeys: keys),
+              let dstVals = try? dstURL.resourceValues(forKeys: keys) else {
+            return false
+        }
+        guard let srcFormat = srcVals.volumeLocalizedFormatDescription,
+              srcFormat.hasPrefix("APFS") else {
+            return false
+        }
+        guard let srcId = srcVals.volumeIdentifier as? NSObject,
+              let dstId = dstVals.volumeIdentifier as? NSObject else {
+            return false
+        }
+        return srcId == dstId
+    }
+
+    /// Attempts an APFS clone. Returns true if successful, false if fallback needed.
+    static func tryCloneFile(from source: URL, to destination: URL) -> Bool {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: destination.path) {
+            try? fm.removeItem(at: destination)
+        }
+        let result = source.path.withCString { srcPath in
+            destination.path.withCString { dstPath in
+                Darwin.clonefile(srcPath, dstPath, UInt32(CLONE_NOFOLLOW))
+            }
+        }
+        if result == 0 { return true }
+        return false
+    }
 
     /// Copies a file with support for resume and progress reporting
     static func copyFile(
@@ -20,6 +57,18 @@ struct FileOperations {
         let sourceAttrs = try fm.attributesOfItem(atPath: source.path)
         guard let sourceSize = sourceAttrs[.size] as? UInt64 else {
             throw MacroboError.copyFailed(source.path, NSError(domain: "macrobo", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot determine file size"]))
+        }
+
+        // APFS clone fast path: instant copy-on-write for same-volume copies
+        if isSameAPFSVolume(source: source.path, destination: destination.path) {
+            let parentDir = destination.deletingLastPathComponent()
+            if !fm.fileExists(atPath: parentDir.path) {
+                try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+            }
+            if tryCloneFile(from: source, to: destination) {
+                await progressHandler?(sourceSize, sourceSize)
+                return sourceSize
+            }
         }
 
         // Check for partial file and resume capability
@@ -127,6 +176,10 @@ struct FileOperations {
         }
         defer { try? sourceHandle.close() }
 
+        if sourceSize >= nocacheThreshold {
+            _ = fcntl(sourceHandle.fileDescriptor, F_NOCACHE, 1)
+        }
+
         // Open or create destination
         let destHandle: FileHandle
         if resumeOffset > 0 && fm.fileExists(atPath: partialDest.path) {
@@ -155,6 +208,10 @@ struct FileOperations {
             }
         }
         defer { try? destHandle.close() }
+
+        if sourceSize >= nocacheThreshold {
+            _ = fcntl(destHandle.fileDescriptor, F_NOCACHE, 1)
+        }
 
         // Copy in chunks using modern Swift-throwing APIs
         // Note: The legacy readData(ofLength:) and write(_:) throw NSExceptions
