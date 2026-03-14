@@ -22,10 +22,18 @@ struct MacroboCommand: AsyncParsableCommand {
     // MARK: - Positional Arguments
 
     @Argument(help: "Source directory to copy from")
-    var source: String
+    var source: String?
 
     @Argument(help: "Destination directory to copy to")
-    var destination: String
+    var destination: String?
+
+    // MARK: - Config Options
+
+    @Option(name: .customLong("config"), help: "Path to a config file")
+    var configFile: String?
+
+    @Option(name: .customLong("job"), help: "Named job from ~/.config/macrobo/<name>.conf")
+    var job: String?
 
     // MARK: - Directory Options
 
@@ -167,21 +175,56 @@ struct MacroboCommand: AsyncParsableCommand {
     // MARK: - Run
 
     func run() async throws {
-        let sourceURL = URL(fileURLWithPath: (source as NSString).expandingTildeInPath)
-        let destURL = URL(fileURLWithPath: (destination as NSString).expandingTildeInPath)
+        // Load config file if specified
+        var loadedConfig: ConfigFile?
+        if let configPath = configFile {
+            loadedConfig = try ConfigFile.load(from: configPath)
+        } else if let jobName = job {
+            loadedConfig = try ConfigFile.loadJob(named: jobName)
+        }
+
+        // Resolve source and destination (CLI overrides config)
+        let resolvedSource: String
+        if let src = source {
+            resolvedSource = src
+        } else if let src = loadedConfig?.values["source"] {
+            resolvedSource = src
+        } else {
+            fputs("Error: source is required (provide as argument or in config file)\n", stderr)
+            throw ExitCode(1)
+        }
+
+        let resolvedDest: String
+        if let dst = destination {
+            resolvedDest = dst
+        } else if let dst = loadedConfig?.values["destination"] {
+            resolvedDest = dst
+        } else {
+            fputs("Error: destination is required (provide as argument or in config file)\n", stderr)
+            throw ExitCode(1)
+        }
+
+        let sourceURL = URL(fileURLWithPath: (resolvedSource as NSString).expandingTildeInPath)
+        let destURL = URL(fileURLWithPath: (resolvedDest as NSString).expandingTildeInPath)
 
         var options = CopyOptions(source: sourceURL, destination: destURL)
 
+        // Apply config file values first (CLI flags override below)
+        var configWarnings: [String] = []
+        if let config = loadedConfig {
+            config.apply(to: &options, warnings: &configWarnings)
+        }
+
         // Directory options
         options.includeEmptyDirectories = !skipEmptyDirs
-        options.mirror = mirror
-        options.purge = purge
+        if mirror { options.mirror = true }
+        if purge { options.purge = true }
 
         // Comparison options
-        options.excludeOlder = excludeOlder
-        options.excludeExtra = excludeExtra
-        options.includeSame = includeSame
-        options.checksum = checksum
+        if excludeOlder { options.excludeOlder = true }
+        if excludeExtra { options.excludeExtra = true }
+        if includeSame { options.includeSame = true }
+        if checksum { options.checksum = true }
 
         // Retry options
         options.retryCount = retryCount
@@ -195,9 +238,9 @@ struct MacroboCommand: AsyncParsableCommand {
         }
 
         // Filtering options
-        options.excludeFiles = excludeFiles
-        options.excludeDirectories = excludeDirs
-        options.includeFiles = includeFiles
+        if !excludeFiles.isEmpty { options.excludeFiles = excludeFiles }
+        if !excludeDirs.isEmpty { options.excludeDirectories = excludeDirs }
+        if !includeFiles.isEmpty { options.includeFiles = includeFiles }
         if let maxSize = maxSize {
             options.maxFileSize = parseSize(maxSize)
         }
@@ -213,8 +256,8 @@ struct MacroboCommand: AsyncParsableCommand {
             options.logFile = URL(fileURLWithPath: (log as NSString).expandingTildeInPath)
             options.appendLog = false
         }
-        options.verbose = verbose
-        options.quiet = quiet
+        if verbose { options.verbose = true }
+        if quiet { options.quiet = true }
 
         // Copy options
         options.copyAttributes = !noAttributes
@@ -223,11 +266,11 @@ struct MacroboCommand: AsyncParsableCommand {
         options.copyExtendedAttributes = !noXattr
 
         // Move options
-        options.moveFiles = moveFiles
-        options.moveAll = moveAll
+        if moveFiles { options.moveFiles = true }
+        if moveAll { options.moveAll = true }
 
         // Dry run
-        options.dryRun = dryRun
+        if dryRun { options.dryRun = true }
 
         // Create components
         let logger = Logger(
@@ -241,13 +284,18 @@ struct MacroboCommand: AsyncParsableCommand {
         let engine = CopyEngine(options: options, logger: logger, progress: progress)
 
         // Print header
-        if !quiet {
+        if !options.quiet {
             let title = "macrobo - Multi-threaded File Copy for macOS (v\(BuildInfo.fullVersion))"
             let separator = String(repeating: "═", count: title.count)
             print("")
             print("  \(title)")
             print("  \(separator)")
             print("")
+
+            // Print config warnings
+            for warning in configWarnings {
+                print("  Warning: \(warning)")
+            }
         }
 
         // Run copy
