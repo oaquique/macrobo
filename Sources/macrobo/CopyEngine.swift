@@ -63,7 +63,7 @@ actor CopyEngine {
 
             // Print summary line after scanning
             if !options.quiet {
-                print("Copying \(filesToCopy.count) files (\(formatBytes(totalBytes)))...")
+                print("Copying \(filesToCopy.count) files (\(formatBytes(totalBytes, precision: 1)))...")
             }
 
             await progress.setTotals(files: filesToCopy.count, bytes: totalBytes)
@@ -544,21 +544,4 @@ actor CopyEngine {
         return (filesToDelete, dirsToDelete)
     }
 
-    /// Format bytes for human-readable display (macOS decimal units)
-    private nonisolated func formatBytes(_ bytes: UInt64) -> String {
-        let units = ["B", "KB", "MB", "GB", "TB"]
-        var value = Double(bytes)
-        var unitIndex = 0
-
-        while value >= 1000 && unitIndex < units.count - 1 {
-            value /= 1000
-            unitIndex += 1
-        }
-
-        if unitIndex == 0 {
-            return "\(bytes) \(units[unitIndex])"
-        } else {
-            return String(format: "%.1f %@", value, units[unitIndex])
-        }
-    }
 }

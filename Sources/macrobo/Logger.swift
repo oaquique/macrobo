@@ -212,21 +212,4 @@ actor Logger {
         try? handle.write(contentsOf: data)
     }
 
-    private func formatBytes(_ bytes: UInt64) -> String {
-        // Use macOS decimal units (base 1000)
-        let units = ["B", "KB", "MB", "GB", "TB"]
-        var value = Double(bytes)
-        var unitIndex = 0
-
-        while value >= 1000 && unitIndex < units.count - 1 {
-            value /= 1000
-            unitIndex += 1
-        }
-
-        if unitIndex == 0 {
-            return "\(bytes) \(units[unitIndex])"
-        } else {
-            return String(format: "%.2f %@", value, units[unitIndex])
-        }
-    }
 }
