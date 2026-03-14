@@ -139,7 +139,7 @@ public actor Logger {
         let percent = totalBytes > 0 ? Int(Double(currentBytes) / Double(totalBytes) * 100) : 0
         let currentStr = formatBytes(currentBytes)
         let totalStr = formatBytes(totalBytes)
-        let displayName = truncate(fileName, max: 30)
+        let displayName = formatTruncate(fileName, maxWidth: 30)
 
         // Build mini progress bar (15 chars)
         let barWidth = 15
@@ -172,38 +172,26 @@ public actor Logger {
             let fileName = source.lastPathComponent
             // Format: "  COPY: filename (size) [n/total]"
             let progress = totalFiles > 0 ? " [\(processedFiles)/\(totalFiles)]" : ""
-            let msg = "COPY: \(truncate(fileName, max: 35)) (\(sizeStr))\(progress)"
+            let msg = "COPY: \(formatTruncate(fileName, maxWidth: 35)) (\(sizeStr))\(progress)"
             debug(msg)
             // Write full path to log file only
             writeToFile("  COPY: \(source.lastPathComponent) -> \(dest.path) (\(sizeStr))")
         case .skipped(let source, let reason, _):
             processedFiles += 1
             let progress = totalFiles > 0 ? " [\(processedFiles)/\(totalFiles)]" : ""
-            let msg = "SKIP: \(truncate(source.lastPathComponent, max: 35)) (\(reason))\(progress)"
+            let msg = "SKIP: \(formatTruncate(source.lastPathComponent, maxWidth: 35)) (\(reason))\(progress)"
             debug(msg)
         case .deleted(let path):
-            let msg = "DEL: \(truncate(path.lastPathComponent, max: 50))"
+            let msg = "DEL: \(formatTruncate(path.lastPathComponent, maxWidth: 50))"
             debug(msg)
         case .failed(let path, let error):
             processedFiles += 1
             clearProgressLine()
-            self.error("\(truncate(path.lastPathComponent, max: 30)): \(error.localizedDescription)")
+            self.error("\(formatTruncate(path.lastPathComponent, maxWidth: 30)): \(error.localizedDescription)")
         case .directoryCreated(let path):
-            let msg = "MKDIR: \(truncatePath(path.path, max: 50))"
+            let msg = "MKDIR: \(formatTruncate(path.path, maxWidth: 50))"
             debug(msg)
         }
-    }
-
-    /// Truncates a string to max length with ellipsis
-    private func truncate(_ str: String, max: Int) -> String {
-        guard str.count > max else { return str }
-        return "..." + str.suffix(max - 3)
-    }
-
-    /// Truncates a path, keeping the end visible
-    private func truncatePath(_ path: String, max: Int) -> String {
-        guard path.count > max else { return path }
-        return "..." + path.suffix(max - 3)
     }
 
     /// Logs the final summary

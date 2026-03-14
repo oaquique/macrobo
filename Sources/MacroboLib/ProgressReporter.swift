@@ -317,7 +317,7 @@ public actor ProgressReporter {
         let counter = formatCounter(completed.index)
         let speedStr = formatSpeed(completed.speed)
         let sizeStr = formatSize(completed.bytes)
-        let timeStr = formatTime(completed.duration)
+        let timeStr = formatDuration(completed.duration, compact: true)
 
         // Fixed-width stats section (no progress bar for completed)
         let stats = String(format: "100%% | %@ | %@ | %@", speedStr, sizeStr, timeStr)
@@ -325,7 +325,7 @@ public actor ProgressReporter {
         // Calculate space for filename (counter + space + name + space + stats)
         let usedWidth = counterWidth + 1 + stats.count + 1
         let nameWidth = max(10, terminalWidth - usedWidth)
-        let truncatedName = truncateOrPad(completed.name, width: nameWidth)
+        let truncatedName = formatTruncate(completed.name, maxWidth: nameWidth, pad: true)
 
         return "\(counter) \(truncatedName) \(stats)"
     }
@@ -338,7 +338,7 @@ public actor ProgressReporter {
             let stats = "Syncing to disk..."
             let usedWidth = counterWidth + 1 + stats.count + 1
             let nameWidth = max(10, terminalWidth - usedWidth)
-            let truncatedName = truncateOrPad(progress.fileName, width: nameWidth)
+            let truncatedName = formatTruncate(progress.fileName, maxWidth: nameWidth, pad: true)
             return "\(counter) \(truncatedName) \(stats)"
         }
 
@@ -347,7 +347,7 @@ public actor ProgressReporter {
         let speed = progress.currentSpeed(at: now)
         let speedStr = formatSpeed(speed)
         let sizeStr = formatSize(progress.copiedBytes)
-        let etaStr = formatTime(progress.eta(at: now))
+        let etaStr = formatDuration(progress.eta(at: now), compact: true)
 
         let bar = brailleBar(percent: progress.percent)
 
@@ -357,7 +357,7 @@ public actor ProgressReporter {
         // Calculate space for filename
         let usedWidth = counterWidth + 1 + stats.count + 1
         let nameWidth = max(10, terminalWidth - usedWidth)
-        let truncatedName = truncateOrPad(progress.fileName, width: nameWidth)
+        let truncatedName = formatTruncate(progress.fileName, maxWidth: nameWidth, pad: true)
 
         return "\(counter) \(truncatedName) \(stats)"
     }
@@ -373,10 +373,10 @@ public actor ProgressReporter {
         let sizeStr = formatSize(completedBytes)
 
         // Calculate ETA for remaining
-        var etaStr = "00m00s"
+        var etaStr = formatDuration(0, compact: true)
         if overallSpeed > 0 && completedBytes < totalBytes {
             let remaining = Double(totalBytes - completedBytes) / overallSpeed
-            etaStr = formatTime(remaining)
+            etaStr = formatDuration(remaining, compact: true)
         }
 
         let bar = brailleBar(percent: totalPercent)
@@ -387,7 +387,7 @@ public actor ProgressReporter {
         // Calculate space for label
         let usedWidth = counterWidth + 1 + stats.count + 1
         let nameWidth = max(10, terminalWidth - usedWidth)
-        let paddedLabel = truncateOrPad("Total", width: nameWidth)
+        let paddedLabel = formatTruncate("Total", maxWidth: nameWidth, pad: true)
 
         return "\(counter) \(paddedLabel) \(stats)"
     }
@@ -418,23 +418,6 @@ public actor ProgressReporter {
         }
     }
 
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let secs = Int(max(0, seconds))
-        if secs >= 86400 {
-            let days = secs / 86400
-            let hours = (secs % 86400) / 3600
-            return String(format: "%02dd%02dh", days, hours)
-        } else if secs >= 3600 {
-            let hours = secs / 3600
-            let mins = (secs % 3600) / 60
-            return String(format: "%02dh%02dm", hours, mins)
-        } else {
-            let mins = secs / 60
-            let s = secs % 60
-            return String(format: "%02dm%02ds", mins, s)
-        }
-    }
-
     /// Builds a braille-dot progress bar that fills vertically like docker/git pull
     private func brailleBar(percent: Int, width: Int = 20) -> String {
         // Braille levels filling bottom-to-top: ⡀ → ⣀ → ⣤ → ⣶ → ⣿
@@ -461,26 +444,4 @@ public actor ProgressReporter {
         return "[" + bar + "]"
     }
 
-    /// Truncate or pad text to exact display width
-    /// Uses character count which works for most Unicode, then pads with spaces
-    private func truncateOrPad(_ text: String, width: Int) -> String {
-        guard width > 0 else { return "" }
-
-        // Count actual characters (not bytes)
-        let charCount = text.count
-
-        if charCount > width {
-            // Truncate with ellipsis
-            if width > 3 {
-                let truncated = String(text.prefix(width - 3))
-                return truncated + "..."
-            } else {
-                return String(text.prefix(width))
-            }
-        } else {
-            // Pad with spaces
-            let padding = String(repeating: " ", count: width - charCount)
-            return text + padding
-        }
-    }
 }

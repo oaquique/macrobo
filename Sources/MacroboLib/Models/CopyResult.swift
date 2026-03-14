@@ -120,21 +120,6 @@ public struct CopyResult {
         return lines.joined(separator: "\n")
     }
 
-    /// Format duration for display
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        if seconds < 60 {
-            return String(format: "%.1f seconds", seconds)
-        } else if seconds < 3600 {
-            let mins = Int(seconds) / 60
-            let secs = Int(seconds) % 60
-            return "\(mins)m \(secs)s"
-        } else {
-            let hours = Int(seconds) / 3600
-            let mins = (Int(seconds) % 3600) / 60
-            return "\(hours)h \(mins)m"
-        }
-    }
-
     /// Records a file operation result
     public mutating func record(_ result: FileOperationResult) {
         switch result {
