@@ -1,7 +1,7 @@
 import Foundation
 
 /// Logger for file and console output
-actor Logger {
+public actor Logger {
     private let logFile: URL?
     private let appendMode: Bool
     private let verbose: Bool
@@ -13,7 +13,7 @@ actor Logger {
     private var suppressConsoleErrors: Bool = false
     private var bufferedErrors: [String] = []
 
-    init(logFile: URL? = nil, append: Bool = false, verbose: Bool = false, quiet: Bool = false) {
+    public init(logFile: URL? = nil, append: Bool = false, verbose: Bool = false, quiet: Bool = false) {
         self.logFile = logFile
         self.appendMode = append
         self.verbose = verbose

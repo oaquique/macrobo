@@ -2,13 +2,13 @@ import CryptoKit
 import Foundation
 
 /// Low-level file operations with support for resumable copies and attribute preservation
-struct FileOperations {
+public struct FileOperations {
     private static let chunkSize: Int = 1024 * 1024  // 1MB chunks for streaming
-    static let partialSuffix = ".macrobo-partial"
+    public static let partialSuffix = ".macrobo-partial"
     private static let nocacheThreshold: UInt64 = 10 * 1024 * 1024  // 10MB
 
     /// Checks if two paths are on the same APFS volume using URL resource values
-    static func isSameAPFSVolume(source: String, destination: String) -> Bool {
+    public static func isSameAPFSVolume(source: String, destination: String) -> Bool {
         let srcURL = URL(fileURLWithPath: source)
         let dstDir = (destination as NSString).deletingLastPathComponent
         let dstURL = URL(fileURLWithPath: dstDir)
@@ -29,7 +29,7 @@ struct FileOperations {
     }
 
     /// Attempts an APFS clone. Returns true if successful, false if fallback needed.
-    static func tryCloneFile(from source: URL, to destination: URL) -> Bool {
+    public static func tryCloneFile(from source: URL, to destination: URL) -> Bool {
         let fm = FileManager.default
         if fm.fileExists(atPath: destination.path) {
             try? fm.removeItem(at: destination)
@@ -44,7 +44,7 @@ struct FileOperations {
     }
 
     /// Copies a file with support for resume and progress reporting
-    static func copyFile(
+    public static func copyFile(
         from source: URL,
         to destination: URL,
         options: CopyOptions,
@@ -249,7 +249,7 @@ struct FileOperations {
     }
 
     /// Copies file attributes (timestamps, permissions)
-    static func copyAttributes(from source: URL, to destination: URL, options: CopyOptions) throws {
+    public static func copyAttributes(from source: URL, to destination: URL, options: CopyOptions) throws {
         let fm = FileManager.default
         let sourceAttrs = try fm.attributesOfItem(atPath: source.path)
         var destAttrs: [FileAttributeKey: Any] = [:]
@@ -275,7 +275,7 @@ struct FileOperations {
     }
 
     /// Copies extended attributes (macOS-specific)
-    static func copyExtendedAttributes(from source: URL, to destination: URL) throws {
+    public static func copyExtendedAttributes(from source: URL, to destination: URL) throws {
         // List extended attributes on source
         let names = try listExtendedAttributes(at: source)
 
@@ -287,7 +287,7 @@ struct FileOperations {
     }
 
     /// Lists extended attribute names
-    static func listExtendedAttributes(at url: URL) throws -> [String] {
+    public static func listExtendedAttributes(at url: URL) throws -> [String] {
         let path = url.path
         let length = listxattr(path, nil, 0, 0)
         guard length >= 0 else {
@@ -318,7 +318,7 @@ struct FileOperations {
     }
 
     /// Gets an extended attribute value
-    static func getExtendedAttribute(name: String, at url: URL) throws -> Data? {
+    public static func getExtendedAttribute(name: String, at url: URL) throws -> Data? {
         let path = url.path
         let length = getxattr(path, name, nil, 0, 0, 0)
         guard length >= 0 else {
@@ -339,7 +339,7 @@ struct FileOperations {
     }
 
     /// Sets an extended attribute value
-    static func setExtendedAttribute(name: String, value: Data, at url: URL) throws {
+    public static func setExtendedAttribute(name: String, value: Data, at url: URL) throws {
         let path = url.path
         try value.withUnsafeBytes { buffer in
             let result = setxattr(path, name, buffer.baseAddress, value.count, 0, 0)
@@ -353,19 +353,19 @@ struct FileOperations {
     }
 
     /// Gets file size
-    static func fileSize(at url: URL) -> UInt64? {
+    public static func fileSize(at url: URL) -> UInt64? {
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
         return attrs?[.size] as? UInt64
     }
 
     /// Gets modification date
-    static func modificationDate(at url: URL) -> Date? {
+    public static func modificationDate(at url: URL) -> Date? {
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
         return attrs?[.modificationDate] as? Date
     }
 
     /// Checks if source is newer than destination
-    static func isSourceNewer(source: URL, destination: URL) -> Bool {
+    public static func isSourceNewer(source: URL, destination: URL) -> Bool {
         guard let sourceDate = modificationDate(at: source),
               let destDate = modificationDate(at: destination) else {
             return true  // Assume source is newer if we can't determine
@@ -378,7 +378,7 @@ struct FileOperations {
     /// Computes a lightweight SHA256 checksum by reading small samples from the first, middle,
     /// and last 4KB of a file. Total I/O per file is ~12KB regardless of file size, making this
     /// safe for network volumes. For files smaller than 12KB, reads the entire file.
-    static func checksumFile(at url: URL, fileSize: UInt64? = nil) throws -> SHA256Digest {
+    public static func checksumFile(at url: URL, fileSize: UInt64? = nil) throws -> SHA256Digest {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
@@ -419,7 +419,7 @@ struct FileOperations {
 
     /// Checks if two same-sized files have identical content by comparing lightweight checksums.
     /// Reads first, middle, and last 4KB of each file — ~24KB total I/O per comparison.
-    static func areFileContentsIdentical(source: URL, destination: URL) -> Bool {
+    public static func areFileContentsIdentical(source: URL, destination: URL) -> Bool {
         let size = fileSize(at: source)
         guard let srcHash = try? checksumFile(at: source, fileSize: size),
               let dstHash = try? checksumFile(at: destination, fileSize: size) else {
@@ -430,7 +430,7 @@ struct FileOperations {
 
     /// Checks if source and destination are identical (same size and modification time)
     /// By default, files that are already identical at the destination are skipped
-    static func areFilesIdentical(source: URL, destination: URL) -> Bool {
+    public static func areFilesIdentical(source: URL, destination: URL) -> Bool {
         guard let sourceSize = fileSize(at: source),
               let destSize = fileSize(at: destination),
               let sourceDate = modificationDate(at: source),
@@ -442,7 +442,7 @@ struct FileOperations {
     }
 
     /// Deletes a file with retry
-    static func deleteFile(at url: URL, retryCount: Int = 3, retryWait: Int = 1) async throws {
+    public static func deleteFile(at url: URL, retryCount: Int = 3, retryWait: Int = 1) async throws {
         var lastError: Error?
         let totalAttempts = 1 + retryCount  // 1 initial + N retries
 

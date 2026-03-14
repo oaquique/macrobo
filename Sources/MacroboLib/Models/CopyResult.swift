@@ -1,21 +1,21 @@
 import Foundation
 
 /// Result of a single file operation
-enum FileOperationResult {
+public enum FileOperationResult {
     case copied(source: URL, destination: URL, bytes: UInt64)
     case skipped(source: URL, reason: SkipReason, bytes: UInt64)
     case deleted(path: URL)
     case failed(path: URL, error: Error)
     case directoryCreated(path: URL)
 
-    enum SkipReason: CustomStringConvertible {
+    public enum SkipReason: CustomStringConvertible {
         case alreadyExists
         case newerAtDestination
         case excludedByPattern
         case sizeOutOfRange
         case dryRun
 
-        var description: String {
+        public var description: String {
             switch self {
             case .alreadyExists: return "already exists"
             case .newerAtDestination: return "destination is newer"
@@ -28,37 +28,39 @@ enum FileOperationResult {
 }
 
 /// Aggregate result of the entire copy operation
-struct CopyResult {
-    var filesCopied: Int = 0
-    var filesSkipped: Int = 0
-    var filesFailed: Int = 0
-    var filesDeleted: Int = 0
-    var directoriesCreated: Int = 0
-    var directoriesDeleted: Int = 0
-    var bytesCopied: UInt64 = 0
-    var bytesSkipped: UInt64 = 0
-    var errors: [(path: String, error: Error)] = []
-    var startTime: Date = Date()
-    var endTime: Date?
+public struct CopyResult {
+    public var filesCopied: Int = 0
+    public var filesSkipped: Int = 0
+    public var filesFailed: Int = 0
+    public var filesDeleted: Int = 0
+    public var directoriesCreated: Int = 0
+    public var directoriesDeleted: Int = 0
+    public var bytesCopied: UInt64 = 0
+    public var bytesSkipped: UInt64 = 0
+    public var errors: [(path: String, error: Error)] = []
+    public var startTime: Date = Date()
+    public var endTime: Date?
+
+    public init() {}
 
     /// Total files processed
-    var totalFiles: Int {
+    public var totalFiles: Int {
         filesCopied + filesSkipped + filesFailed
     }
 
     /// Duration of the operation
-    var duration: TimeInterval {
+    public var duration: TimeInterval {
         (endTime ?? Date()).timeIntervalSince(startTime)
     }
 
     /// Copy speed in bytes per second
-    var bytesPerSecond: Double {
+    public var bytesPerSecond: Double {
         guard duration > 0 else { return 0 }
         return Double(bytesCopied) / duration
     }
 
     /// Formatted summary string
-    var summary: String {
+    public var summary: String {
         let separator = String(repeating: "─", count: 60)
 
         // Helper to right-align label and add colon (aligns colons at column 25)
@@ -134,7 +136,7 @@ struct CopyResult {
     }
 
     /// Records a file operation result
-    mutating func record(_ result: FileOperationResult) {
+    public mutating func record(_ result: FileOperationResult) {
         switch result {
         case .copied(_, _, let bytes):
             filesCopied += 1
@@ -153,7 +155,7 @@ struct CopyResult {
     }
 
     /// Marks the operation as complete
-    mutating func finish() {
+    public mutating func finish() {
         endTime = Date()
     }
 }

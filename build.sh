@@ -4,7 +4,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUILD_INFO="$SCRIPT_DIR/Sources/macrobo/BuildInfo.swift"
+BUILD_INFO="$SCRIPT_DIR/Sources/MacroboLib/BuildInfo.swift"
 BUNDLE_ID="com.oaquique.macrobo"
 ENTITLEMENTS="$SCRIPT_DIR/macrobo.entitlements"
 
@@ -16,10 +16,10 @@ cat > "$BUILD_INFO" << EOF
 import Foundation
 
 /// Build information - auto-generated, do not edit manually
-enum BuildInfo {
-    static let version = "2.0"
-    static let build = $BUILD_NUMBER
-    static var fullVersion: String { "\(version).\(build)" }
+public enum BuildInfo {
+    public static let version = "2.0"
+    public static let build = $BUILD_NUMBER
+    public static var fullVersion: String { "\(version).\(build)" }
 }
 EOF
 

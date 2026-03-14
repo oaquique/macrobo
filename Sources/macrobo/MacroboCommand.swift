@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import MacroboLib
 
 @main
 struct MacroboCommand: AsyncParsableCommand {

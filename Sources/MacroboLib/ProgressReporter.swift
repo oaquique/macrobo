@@ -37,7 +37,7 @@ struct CompletedFile: Sendable {
 }
 
 /// Reports progress to the console with DNF-style multi-line display
-actor ProgressReporter {
+public actor ProgressReporter {
     private let quiet: Bool
     private var totalFiles: Int = 0
     private var totalBytes: UInt64 = 0
@@ -63,7 +63,7 @@ actor ProgressReporter {
     // Maximum number of completed files to show
     private let maxCompletedToShow = 20
 
-    init(quiet: Bool = false) {
+    public init(quiet: Bool = false) {
         self.quiet = quiet
         var ws = winsize()
         if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 {

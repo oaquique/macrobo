@@ -1,64 +1,64 @@
 import Foundation
 
 /// Configuration options for the copy operation
-struct CopyOptions {
+public struct CopyOptions {
     // Source and destination
-    let source: URL
-    let destination: URL
+    public let source: URL
+    public let destination: URL
 
     // Directory options
-    var includeEmptyDirectories: Bool = true
-    var mirror: Bool = false  // /MIR - copy + purge
-    var purge: Bool = false   // /PURGE - delete dest files not in source
+    public var includeEmptyDirectories: Bool = true
+    public var mirror: Bool = false  // /MIR - copy + purge
+    public var purge: Bool = false   // /PURGE - delete dest files not in source
 
     // File comparison
-    var excludeOlder: Bool = false      // /XO - only copy if source is newer
-    var excludeExtra: Bool = false      // /XX - don't delete extra files in dest
-    var includeSame: Bool = false       // /IS - include same files (force copy even if identical)
-    var checksum: Bool = false          // Compare checksums when size matches but timestamps differ
+    public var excludeOlder: Bool = false      // /XO - only copy if source is newer
+    public var excludeExtra: Bool = false      // /XX - don't delete extra files in dest
+    public var includeSame: Bool = false       // /IS - include same files (force copy even if identical)
+    public var checksum: Bool = false          // Compare checksums when size matches but timestamps differ
 
     // Retry options
-    var retryCount: Int = 3          // /R:n
-    var retryWaitSeconds: Int = 5    // /W:n
+    public var retryCount: Int = 3          // /R:n
+    public var retryWaitSeconds: Int = 5    // /W:n
 
     // Performance
-    var threadCount: Int = 8         // /MT:n
-    var resumePartial: Bool = true   // Resume interrupted copies
+    public var threadCount: Int = 8         // /MT:n
+    public var resumePartial: Bool = true   // Resume interrupted copies
 
     // Filtering
-    var excludeFiles: [String] = []      // /XF patterns
-    var excludeDirectories: [String] = [] // /XD patterns
-    var includeFiles: [String] = []       // /IF patterns
-    var maxFileSize: UInt64?              // /MAXSIZE:n bytes
-    var minFileSize: UInt64?              // /MINSIZE:n bytes
+    public var excludeFiles: [String] = []      // /XF patterns
+    public var excludeDirectories: [String] = [] // /XD patterns
+    public var includeFiles: [String] = []       // /IF patterns
+    public var maxFileSize: UInt64?              // /MAXSIZE:n bytes
+    public var minFileSize: UInt64?              // /MINSIZE:n bytes
 
     // Logging
-    var logFile: URL? = nil           // /LOG:file
-    var appendLog: Bool = false       // /LOG+:file
-    var verbose: Bool = false         // /V
-    var quiet: Bool = false           // /NP - no progress
+    public var logFile: URL? = nil           // /LOG:file
+    public var appendLog: Bool = false       // /LOG+:file
+    public var verbose: Bool = false         // /V
+    public var quiet: Bool = false           // /NP - no progress
 
     // What to copy
-    var copyAttributes: Bool = true   // Copy file attributes
-    var copyTimestamps: Bool = true   // Copy timestamps
-    var copyPermissions: Bool = true  // Copy POSIX permissions
-    var copyExtendedAttributes: Bool = true  // macOS extended attributes
+    public var copyAttributes: Bool = true   // Copy file attributes
+    public var copyTimestamps: Bool = true   // Copy timestamps
+    public var copyPermissions: Bool = true  // Copy POSIX permissions
+    public var copyExtendedAttributes: Bool = true  // macOS extended attributes
 
     // Move mode
-    var moveFiles: Bool = false       // /MOV - move files
-    var moveAll: Bool = false         // /MOVE - move files and dirs
+    public var moveFiles: Bool = false       // /MOV - move files
+    public var moveAll: Bool = false         // /MOVE - move files and dirs
 
     // Dry run
-    var dryRun: Bool = false          // /L - list only
+    public var dryRun: Bool = false          // /L - list only
 
     /// Creates options from source and destination paths
-    init(source: URL, destination: URL) {
+    public init(source: URL, destination: URL) {
         self.source = source
         self.destination = destination
     }
 
     /// Validates the options
-    func validate() throws {
+    public func validate() throws {
         let fm = FileManager.default
 
         // Source must exist
@@ -83,7 +83,7 @@ struct CopyOptions {
 }
 
 /// Errors that can occur during macrobo operations
-enum MacroboError: Error, LocalizedError {
+public enum MacroboError: Error, LocalizedError {
     case sourceNotFound(String)
     case sourceNotDirectory(String)
     case destinationCreationFailed(String)
@@ -94,7 +94,7 @@ enum MacroboError: Error, LocalizedError {
     case permissionDenied(String)
     case fileLocked(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .sourceNotFound(let path):
             return "Source not found: \(path)"

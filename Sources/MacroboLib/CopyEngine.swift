@@ -1,14 +1,20 @@
 import Foundation
 
 /// File info with size and relative path captured during enumeration
-struct FileInfo: Sendable {
-    let url: URL
-    let size: UInt64
-    let relativePath: String  // Path relative to source root
+public struct FileInfo: Sendable {
+    public let url: URL
+    public let size: UInt64
+    public let relativePath: String  // Path relative to source root
+
+    public init(url: URL, size: UInt64, relativePath: String) {
+        self.url = url
+        self.size = size
+        self.relativePath = relativePath
+    }
 }
 
 /// Core copy engine with multi-threaded file operations
-actor CopyEngine {
+public actor CopyEngine {
     private let options: CopyOptions
     private let logger: Logger
     private let progress: ProgressReporter
@@ -16,7 +22,7 @@ actor CopyEngine {
     private let resolvedSourcePath: String
     private let resolvedDestPath: String
 
-    init(options: CopyOptions, logger: Logger, progress: ProgressReporter) {
+    public init(options: CopyOptions, logger: Logger, progress: ProgressReporter) {
         self.options = options
         self.logger = logger
         self.progress = progress
@@ -37,7 +43,7 @@ actor CopyEngine {
     }
 
     /// Runs the copy operation
-    func run() async throws -> CopyResult {
+    public func run() async throws -> CopyResult {
         // Validate options
         try options.validate()
 
