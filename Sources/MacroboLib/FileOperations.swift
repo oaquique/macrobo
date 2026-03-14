@@ -48,6 +48,7 @@ public struct FileOperations {
         from source: URL,
         to destination: URL,
         options: CopyOptions,
+        rateLimiter: RateLimiter? = nil,
         progressHandler: ((UInt64, UInt64) async -> Void)? = nil,
         syncHandler: (() async -> Void)? = nil
     ) async throws -> UInt64 {
@@ -103,6 +104,7 @@ public struct FileOperations {
             sourceSize: sourceSize,
             resumeOffset: resumeOffset,
             syncBeforeRename: needsSync,
+            rateLimiter: rateLimiter,
             progressHandler: progressHandler,
             syncHandler: syncHandler
         )
@@ -156,6 +158,7 @@ public struct FileOperations {
         sourceSize: UInt64,
         resumeOffset: UInt64,
         syncBeforeRename: Bool,
+        rateLimiter: RateLimiter? = nil,
         progressHandler: ((UInt64, UInt64) async -> Void)?,
         syncHandler: (() async -> Void)?
     ) async throws {
@@ -224,6 +227,9 @@ public struct FileOperations {
                     break
                 }
                 try destHandle.write(contentsOf: chunk)
+                if let limiter = rateLimiter {
+                    await limiter.acquire(chunk.count)
+                }
                 totalWritten += UInt64(chunk.count)
             } catch {
                 throw MacroboError.copyFailed(source.lastPathComponent, error)

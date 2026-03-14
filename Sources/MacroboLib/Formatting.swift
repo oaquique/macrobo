@@ -59,6 +59,28 @@ public func formatTruncate(_ text: String, maxWidth: Int, pad: Bool = false) -> 
     return text
 }
 
+/// Parses a human-readable size string (e.g., "100M", "1G") using macOS decimal units
+public func parseSize(_ sizeStr: String) -> UInt64? {
+    let str = sizeStr.uppercased().trimmingCharacters(in: .whitespaces)
+    guard !str.isEmpty else { return nil }
+
+    // Use decimal (base 1000) to match macOS conventions
+    let multipliers: [Character: UInt64] = [
+        "K": 1_000,
+        "M": 1_000_000,
+        "G": 1_000_000_000,
+        "T": 1_000_000_000_000
+    ]
+
+    if let lastChar = str.last, let multiplier = multipliers[lastChar] {
+        let numStr = String(str.dropLast())
+        guard let num = UInt64(numStr) else { return nil }
+        return num * multiplier
+    } else {
+        return UInt64(str)
+    }
+}
+
 /// Terminal dimension utilities
 public enum Terminal {
     public static var width: Int {

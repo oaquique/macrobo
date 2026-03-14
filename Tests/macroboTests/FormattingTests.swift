@@ -54,4 +54,12 @@ final class FormattingTests: XCTestCase {
     func testTruncateWithPad() {
         XCTAssertEqual(formatTruncate("hi", maxWidth: 5, pad: true), "hi   ")
     }
+
+    // MARK: - parseSize
+    func testParseSizeBytes() { XCTAssertEqual(parseSize("1024"), 1024) }
+    func testParseSizeKilobytes() { XCTAssertEqual(parseSize("100K"), 100_000) }
+    func testParseSizeMegabytes() { XCTAssertEqual(parseSize("50M"), 50_000_000) }
+    func testParseSizeGigabytes() { XCTAssertEqual(parseSize("2G"), 2_000_000_000) }
+    func testParseSizeCaseInsensitive() { XCTAssertEqual(parseSize("100m"), 100_000_000) }
+    func testParseSizeInvalid() { XCTAssertNil(parseSize("")); XCTAssertNil(parseSize("abc")) }
 }

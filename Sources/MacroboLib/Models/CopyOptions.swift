@@ -48,6 +48,9 @@ public struct CopyOptions {
     public var moveFiles: Bool = false       // /MOV - move files
     public var moveAll: Bool = false         // /MOVE - move files and dirs
 
+    // Bandwidth
+    public var bandwidthLimit: UInt64 = 0  // 0 = unlimited, bytes per second
+
     // Dry run
     public var dryRun: Bool = false          // /L - list only
 

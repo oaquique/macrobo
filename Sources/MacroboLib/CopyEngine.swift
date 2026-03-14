@@ -5,6 +5,7 @@ public actor CopyEngine {
     private let options: CopyOptions
     private let logger: Logger
     private let progress: ProgressReporter
+    private let rateLimiter: RateLimiter?
     private var result = CopyResult()
     private let resolvedSourcePath: String
     private let resolvedDestPath: String
@@ -13,6 +14,7 @@ public actor CopyEngine {
         self.options = options
         self.logger = logger
         self.progress = progress
+        self.rateLimiter = options.bandwidthLimit > 0 ? RateLimiter(bytesPerSecond: options.bandwidthLimit) : nil
         // Resolve symlinks using realpath for consistent path handling
         // The file enumerator returns resolved paths (e.g., /private/tmp/...) so we must match
         self.resolvedSourcePath = Self.realPath(options.source.path) ?? options.source.path
@@ -309,6 +311,7 @@ public actor CopyEngine {
                     from: source,
                     to: destURL,
                     options: options,
+                    rateLimiter: rateLimiter,
                     progressHandler: { current, total in
                         await self.progress.bytesProgress(current: current, total: total, key: progressKey)
                         await self.logger.logFileProgress(fileName: source.lastPathComponent, currentBytes: current, totalBytes: total)
