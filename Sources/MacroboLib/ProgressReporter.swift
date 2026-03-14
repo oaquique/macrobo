@@ -39,6 +39,7 @@ struct CompletedFile: Sendable {
 /// Reports progress to the console with DNF-style multi-line display
 public actor ProgressReporter {
     private let quiet: Bool
+    private let mode: CopyOptions.ProgressMode
     private var totalFiles: Int = 0
     private var totalBytes: UInt64 = 0
     private var completedFiles: Int = 0
@@ -79,8 +80,26 @@ public actor ProgressReporter {
     // Maximum number of completed files to show
     private let maxCompletedToShow = 20
 
-    public init(quiet: Bool = false) {
+    public init(quiet: Bool = false, mode: CopyOptions.ProgressMode = .bar) {
         self.quiet = quiet
+        self.mode = mode
+    }
+
+    private func writeJSON(_ dict: [String: Any]) {
+        var parts: [String] = []
+        for (key, value) in dict.sorted(by: { $0.key < $1.key }) {
+            switch value {
+            case let s as String: parts.append("\"\(key)\":\"\(s)\"")
+            case let n as Int: parts.append("\"\(key)\":\(n)")
+            case let n as UInt64: parts.append("\"\(key)\":\(n)")
+            case let n as Double: parts.append("\"\(key)\":\(String(format: "%.2f", n))")
+            default: parts.append("\"\(key)\":\"\(value)\"")
+            }
+        }
+        let json = "{\(parts.joined(separator: ","))}\n"
+        json.utf8CString.withUnsafeBufferPointer { ptr in
+            _ = Darwin.write(STDOUT_FILENO, ptr.baseAddress, json.utf8.count)
+        }
     }
 
     /// Sets the total counts for progress calculation
@@ -106,6 +125,14 @@ public actor ProgressReporter {
             copiedBytes: 0,
             startTime: Date()
         )
+        if mode == .json {
+            writeJSON([
+                "event": "file_start" as String,
+                "file": displayName as String,
+                "bytes": bytes
+            ])
+            return
+        }
         updateDisplay()
     }
 
@@ -128,9 +155,11 @@ public actor ProgressReporter {
     func fileCompleted(key: String, displayName: String, bytes: UInt64) {
         let now = Date()
 
+        var speed: Double = 0
+        var duration: TimeInterval = 0
         if let progress = activeFiles[key] {
-            let duration = now.timeIntervalSince(progress.startTime)
-            let speed = duration > 0.001 ? Double(bytes) / duration : Double(bytes) / 0.001
+            duration = now.timeIntervalSince(progress.startTime)
+            speed = duration > 0.001 ? Double(bytes) / duration : Double(bytes) / 0.001
 
             completedList.append(CompletedFile(
                 index: progress.index,
@@ -154,6 +183,18 @@ public actor ProgressReporter {
 
         completedFiles += 1
         completedBytes += bytes
+
+        if mode == .json {
+            writeJSON([
+                "event": "file_done" as String,
+                "file": displayName as String,
+                "bytes": bytes,
+                "speed": speed,
+                "completed_files": completedFiles as Int,
+                "total_files": totalFiles as Int
+            ])
+            return
+        }
 
         // Prune old entries to prevent unbounded memory growth
         if completedList.count > maxCompletedToShow {
@@ -224,6 +265,20 @@ public actor ProgressReporter {
 
     /// Finishes progress display - clears multi-line display and shows clean final total
     func finish() {
+        if mode == .json {
+            let elapsed = Date().timeIntervalSince(startTime)
+            let overallSpeed = elapsed > 0.001 ? Double(completedBytes) / elapsed : 0
+            writeJSON([
+                "event": "summary" as String,
+                "completed_files": completedFiles as Int,
+                "total_files": totalFiles as Int,
+                "completed_bytes": completedBytes,
+                "total_bytes": totalBytes,
+                "speed": overallSpeed,
+                "elapsed": elapsed
+            ])
+            return
+        }
         guard !quiet else { return }
 
         // Clear the entire multi-line progress display

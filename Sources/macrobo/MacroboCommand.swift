@@ -138,6 +138,9 @@ struct MacroboCommand: AsyncParsableCommand {
           help: "Quiet mode - minimal output")
     var quiet = false
 
+    @Option(name: .customLong("progress"), help: "Progress display mode: bar (default), json, or none")
+    var progressMode: String?
+
     // MARK: - Copy Options
 
     @Flag(name: .customLong("no-attributes"),
@@ -272,6 +275,15 @@ struct MacroboCommand: AsyncParsableCommand {
         // Dry run
         if dryRun { options.dryRun = true }
 
+        // Progress mode
+        let resolvedProgressMode: CopyOptions.ProgressMode
+        if let modeStr = progressMode {
+            resolvedProgressMode = CopyOptions.ProgressMode(rawValue: modeStr) ?? .bar
+        } else {
+            resolvedProgressMode = options.progressMode
+        }
+        options.progressMode = resolvedProgressMode
+
         // Create components
         let logger = Logger(
             logFile: options.logFile,
@@ -280,11 +292,13 @@ struct MacroboCommand: AsyncParsableCommand {
             quiet: options.quiet
         )
         // In verbose mode, suppress progress bar (file-by-file output is shown instead)
-        let progress = ProgressReporter(quiet: options.quiet || options.verbose)
+        let suppressProgress = options.quiet || options.verbose || resolvedProgressMode == .none
+        let progress = ProgressReporter(quiet: suppressProgress, mode: resolvedProgressMode)
         let engine = CopyEngine(options: options, logger: logger, progress: progress)
 
         // Print header
-        if !options.quiet {
+        let suppressBanner = options.quiet || resolvedProgressMode == .json
+        if !suppressBanner {
             let title = "macrobo - Multi-threaded File Copy for macOS (v\(BuildInfo.fullVersion))"
             let separator = String(repeating: "═", count: title.count)
             print("")

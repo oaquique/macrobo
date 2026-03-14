@@ -51,6 +51,12 @@ public struct CopyOptions {
     // Bandwidth
     public var bandwidthLimit: UInt64 = 0  // 0 = unlimited, bytes per second
 
+    // Progress display
+    public enum ProgressMode: String {
+        case bar, json, none
+    }
+    public var progressMode: ProgressMode = .bar
+
     // Dry run
     public var dryRun: Bool = false          // /L - list only
 
