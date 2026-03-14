@@ -169,6 +169,11 @@ struct MacroboCommand: AsyncParsableCommand {
           help: "Move files and directories")
     var moveAll = false
 
+    // MARK: - Verification
+
+    @Flag(name: .customLong("verify"), help: "Verify copied files by comparing full SHA256 checksums")
+    var verify = false
+
     // MARK: - Dry Run
 
     @Flag(name: [.customShort("l"), .customLong("list"), .customLong("dry-run")],
@@ -274,6 +279,7 @@ struct MacroboCommand: AsyncParsableCommand {
 
         // Dry run
         if dryRun { options.dryRun = true }
+        if verify { options.verify = true }
 
         // Progress mode
         let resolvedProgressMode: CopyOptions.ProgressMode

@@ -68,11 +68,16 @@ public actor CopyEngine {
             await logger.beginProgressDisplay()
 
             // Copy files using thread pool
-            await copyFiles(filesToCopy)
+            let copiedPairs = await copyFiles(filesToCopy)
 
             // End progress display - flush any buffered errors
             await progress.finish()
             await logger.endProgressDisplay()
+
+            // Verify copied files if requested
+            if options.verify && !copiedPairs.isEmpty {
+                await verifyFiles(copiedPairs)
+            }
 
             // Handle purge/mirror - delete extra files in destination
             if options.mirror || options.purge {
@@ -227,8 +232,9 @@ public actor CopyEngine {
         return files
     }
 
-    /// Copies files using a thread pool
-    private func copyFiles(_ files: [FileInfo]) async {
+    /// Copies files using a thread pool, returns list of successfully copied source/destination pairs
+    private func copyFiles(_ files: [FileInfo]) async -> [(source: URL, destination: URL)] {
+        var copiedPairs: [(source: URL, destination: URL)] = []
         await withTaskGroup(of: (FileOperationResult, String).self) { group in
             var pendingFiles = files[...]
             var activeTasks = 0
@@ -250,7 +256,8 @@ public actor CopyEngine {
 
                 // Update progress for both successful and failed files
                 switch opResult {
-                case .copied(let source, _, let bytes):
+                case .copied(let source, let dest, let bytes):
+                    copiedPairs.append((source: source, destination: dest))
                     await progress.fileCompleted(key: progressKey, displayName: source.lastPathComponent, bytes: bytes)
                 case .failed:
                     await progress.fileFailed(key: progressKey)
@@ -270,6 +277,7 @@ public actor CopyEngine {
                 }
             }
         }
+        return copiedPairs
     }
 
     /// Copies a single file with retry support
@@ -342,6 +350,43 @@ public actor CopyEngine {
         }
 
         return .failed(path: source, error: lastError ?? MacroboError.copyFailed(source.path, NSError(domain: "macrobo", code: 99)))
+    }
+
+    /// Verifies copied files by comparing full SHA256 checksums
+    private func verifyFiles(_ pairs: [(source: URL, destination: URL)]) async {
+        if !options.quiet {
+            print("Verifying \(pairs.count) copied files...")
+        }
+        await logger.info("Verifying \(pairs.count) copied files...")
+
+        var verified = 0
+        var failed = 0
+
+        for (source, destination) in pairs {
+            do {
+                let srcHash = try FileOperations.fullChecksumFile(at: source)
+                let dstHash = try FileOperations.fullChecksumFile(at: destination)
+                if srcHash == dstHash {
+                    verified += 1
+                } else {
+                    failed += 1
+                    result.record(.failed(path: destination, error: MacroboError.copyFailed(
+                        destination.lastPathComponent,
+                        NSError(domain: "macrobo", code: 10,
+                                userInfo: [NSLocalizedDescriptionKey: "Verification failed: checksum mismatch"])
+                    )))
+                    await logger.warning("Verification FAILED: \(destination.lastPathComponent)")
+                }
+            } catch {
+                failed += 1
+                await logger.warning("Verification error for \(destination.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
+        if !options.quiet {
+            print("Verification complete: \(verified) OK, \(failed) failed")
+        }
+        await logger.info("Verification complete: \(verified) OK, \(failed) failed")
     }
 
     /// Purges extra files from destination that don't exist in source

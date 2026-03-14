@@ -57,6 +57,9 @@ public struct CopyOptions {
     }
     public var progressMode: ProgressMode = .bar
 
+    // Verification
+    public var verify: Bool = false
+
     // Dry run
     public var dryRun: Bool = false          // /L - list only
 

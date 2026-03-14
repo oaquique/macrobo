@@ -148,6 +148,15 @@ final class CopyEngineTests: XCTestCase {
         ))
     }
 
+    func testVerifyMode() async throws {
+        createFile("verified.txt", in: srcDir, content: "verify me please")
+        var options = CopyOptions(source: srcDir, destination: dstDir)
+        options.verify = true
+        let result = try await runCopy(options: options)
+        XCTAssertEqual(result.filesCopied, 1)
+        XCTAssertEqual(result.filesFailed, 0)
+    }
+
     func testChecksumSkipsIdenticalContent() async throws {
         createFile("file.txt", in: srcDir, content: "same content")
         var options = CopyOptions(source: srcDir, destination: dstDir)

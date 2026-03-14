@@ -423,6 +423,17 @@ public struct FileOperations {
         return hasher.finalize()
     }
 
+    /// Computes a full SHA256 checksum of the entire file contents
+    public static func fullChecksumFile(at url: URL) throws -> SHA256Digest {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let data = try handle.read(upToCount: chunkSize), !data.isEmpty {
+            hasher.update(data: data)
+        }
+        return hasher.finalize()
+    }
+
     /// Checks if two same-sized files have identical content by comparing lightweight checksums.
     /// Reads first, middle, and last 4KB of each file — ~24KB total I/O per comparison.
     public static func areFileContentsIdentical(source: URL, destination: URL) -> Bool {
