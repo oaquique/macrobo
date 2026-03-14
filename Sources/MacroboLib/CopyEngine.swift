@@ -485,7 +485,11 @@ public actor CopyEngine {
         let fm = FileManager.default
 
         // Gather files to delete (synchronous to avoid Swift 6 warning)
-        let (filesToDelete, dirsToDelete) = gatherFilesToPurge()
+        let (filesToDelete, dirsToDelete) = gatherFilesToPurge(
+            destination: options.destination,
+            resolvedDestPath: resolvedDestPath,
+            resolvedSourcePath: resolvedSourcePath
+        )
 
         // Delete files
         for file in filesToDelete {
@@ -518,10 +522,14 @@ public actor CopyEngine {
     }
 
     /// Gathers files and directories to purge (synchronous helper to avoid Swift 6 warning)
-    private nonisolated func gatherFilesToPurge() -> (files: [URL], dirs: [URL]) {
+    private nonisolated func gatherFilesToPurge(
+        destination: URL,
+        resolvedDestPath: String,
+        resolvedSourcePath: String
+    ) -> (files: [URL], dirs: [URL]) {
         let fm = FileManager.default
         let enumerator = fm.enumerator(
-            at: options.destination,
+            at: destination,
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
             options: []
         )
