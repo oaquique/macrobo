@@ -191,6 +191,9 @@ public actor Logger {
         case .directoryCreated(let path):
             let msg = "MKDIR: \(formatTruncate(path.path, maxWidth: 50))"
             debug(msg)
+        case .directoryDeleted(let path):
+            let msg = "RMDIR: \(formatTruncate(path.lastPathComponent, maxWidth: 50))"
+            debug(msg)
         }
     }
 

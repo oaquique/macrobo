@@ -7,6 +7,7 @@ public enum FileOperationResult {
     case deleted(path: URL)
     case failed(path: URL, error: Error)
     case directoryCreated(path: URL)
+    case directoryDeleted(path: URL)
 
     public enum SkipReason: CustomStringConvertible {
         case alreadyExists
@@ -136,6 +137,8 @@ public struct CopyResult {
             errors.append((path.path, error))
         case .directoryCreated(_):
             directoriesCreated += 1
+        case .directoryDeleted(_):
+            directoriesDeleted += 1
         }
     }
 

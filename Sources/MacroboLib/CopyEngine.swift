@@ -362,7 +362,7 @@ public actor CopyEngine {
             }
             do {
                 try await FileOperations.deleteFile(at: file)
-                result.filesDeleted += 1
+                result.record(.deleted(path: file))
                 await logger.logOperation(.deleted(path: file))
             } catch {
                 result.record(.failed(path: file, error: error))
@@ -376,8 +376,8 @@ public actor CopyEngine {
             }
             do {
                 try fm.removeItem(at: dir)
-                result.directoriesDeleted += 1
-                await logger.logOperation(.deleted(path: dir))
+                result.record(.directoryDeleted(path: dir))
+                await logger.logOperation(.directoryDeleted(path: dir))
             } catch {
                 await logger.warning("Failed to delete directory \(dir.path): \(error.localizedDescription)")
             }
