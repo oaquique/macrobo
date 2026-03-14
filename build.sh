@@ -17,13 +17,13 @@ import Foundation
 
 /// Build information - auto-generated, do not edit manually
 enum BuildInfo {
-    static let version = "1.0"
+    static let version = "2.0"
     static let build = $BUILD_NUMBER
     static var fullVersion: String { "\(version).\(build)" }
 }
 EOF
 
-echo "Building macrobo version 1.0.$BUILD_NUMBER"
+echo "Building macrobo version 2.0.$BUILD_NUMBER"
 
 # Build release by default, debug with --debug, or universal with --universal
 if [[ "$1" == "--debug" ]]; then
@@ -63,4 +63,4 @@ else
     codesign --force --sign - --identifier "$BUNDLE_ID" --entitlements "$ENTITLEMENTS" "$BINARY"
 fi
 
-echo "Build complete: macrobo 1.0.$BUILD_NUMBER"
+echo "Build complete: macrobo 2.0.$BUILD_NUMBER"
