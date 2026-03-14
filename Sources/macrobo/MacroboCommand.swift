@@ -15,6 +15,10 @@ struct MacroboCommand: AsyncParsableCommand {
               macrobo ~/Documents ~/Backup/Documents
               macrobo /source /dest --mirror
               macrobo /source /dest --mirror --threads 16 --exclude-dirs .git node_modules
+              macrobo /source /dest --bwlimit 50M --verify
+              macrobo /source /dest --progress json
+              macrobo --job photos-backup
+              macrobo --config ~/sync.conf --mirror
             """,
         version: BuildInfo.fullVersion
     )
