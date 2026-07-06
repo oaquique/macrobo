@@ -242,9 +242,16 @@ public struct FileOperations {
             }
         }
 
+        // Flush the destination to durable storage before renaming and stamping
+        // attributes. Required for network filesystems (SMB/NFS) with delayed
+        // write-back: if buffered data is committed by the server AFTER copyFile()
+        // sets the mtime via copyAttributes(), the server bumps the mtime to
+        // commit-time, so the file fails the size+mtime "identical" check on the
+        // next run and is needlessly re-copied. fsync here forces the commit to
+        // happen now, making the later mtime stamp final.
+        try destHandle.synchronize()
         if syncBeforeRename {
             await syncHandler?()
-            try destHandle.synchronize()
         }
 
         // Rename partial to final destination

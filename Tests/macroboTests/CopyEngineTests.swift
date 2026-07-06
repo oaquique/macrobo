@@ -119,6 +119,34 @@ final class CopyEngineTests: XCTestCase {
         XCTAssertEqual(dstSize, 0)
     }
 
+    /// Regression: a large file (streaming-copy path) must keep the source mtime so
+    /// the second run recognizes it as identical and skips it. On network volumes
+    /// (SMB/NFS) with delayed write-back, failing to fsync the destination before
+    /// stamping the mtime lets the server bump the mtime to commit-time, causing the
+    /// file to be re-copied on every run. See streamingCopy() fsync-before-rename.
+    func testLargeFilePreservesMtimeAndSkipsOnSecondRun() async throws {
+        // > 2 * chunkSize (1MB) to force the streaming path rather than simpleFileCopy.
+        let big = srcDir.appendingPathComponent("large.bin")
+        try Data(repeating: 0x5A, count: 3 * 1024 * 1024).write(to: big)
+        let pastDate = Date().addingTimeInterval(-3600)
+        try FileManager.default.setAttributes([.modificationDate: pastDate], ofItemAtPath: big.path)
+
+        let options = CopyOptions(source: srcDir, destination: dstDir)
+        let first = try await runCopy(options: options)
+        XCTAssertEqual(first.filesCopied, 1)
+
+        // Destination mtime must match the source (streaming path stamped it).
+        let dst = dstDir.appendingPathComponent("large.bin")
+        let srcMtime = FileOperations.modificationDate(at: big)!
+        let dstMtime = FileOperations.modificationDate(at: dst)!
+        XCTAssertLessThan(abs(srcMtime.timeIntervalSince(dstMtime)), 1.0,
+                          "large-file dest mtime drifted from source: \(srcMtime) vs \(dstMtime)")
+
+        // Second run must skip it (this is the behavior that broke on SMB).
+        let second = try await runCopy(options: options)
+        XCTAssertEqual(second.filesCopied, 0, "identical large file was re-copied on the second run")
+    }
+
     func testMinSizeFilter() async throws {
         createFile("small.txt", in: srcDir, content: "hi")
         createFile("big.txt", in: srcDir, content: String(repeating: "x", count: 1000))
