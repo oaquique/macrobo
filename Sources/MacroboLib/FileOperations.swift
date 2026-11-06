@@ -377,15 +377,6 @@ public struct FileOperations {
         return attrs?[.modificationDate] as? Date
     }
 
-    /// Checks if source is newer than destination
-    public static func isSourceNewer(source: URL, destination: URL) -> Bool {
-        guard let sourceDate = modificationDate(at: source),
-              let destDate = modificationDate(at: destination) else {
-            return true  // Assume source is newer if we can't determine
-        }
-        return sourceDate > destDate
-    }
-
     private static let sampleSize = 4096  // 4KB samples for lightweight checksum
 
     /// Computes a lightweight SHA256 checksum by reading small samples from the first, middle,
@@ -443,26 +434,13 @@ public struct FileOperations {
 
     /// Checks if two same-sized files have identical content by comparing lightweight checksums.
     /// Reads first, middle, and last 4KB of each file — ~24KB total I/O per comparison.
-    public static func areFileContentsIdentical(source: URL, destination: URL) -> Bool {
-        let size = fileSize(at: source)
+    public static func areFileContentsIdentical(source: URL, destination: URL, sourceSize: UInt64? = nil) -> Bool {
+        let size = sourceSize ?? fileSize(at: source)
         guard let srcHash = try? checksumFile(at: source, fileSize: size),
               let dstHash = try? checksumFile(at: destination, fileSize: size) else {
             return false
         }
         return srcHash == dstHash
-    }
-
-    /// Checks if source and destination are identical (same size and modification time)
-    /// By default, files that are already identical at the destination are skipped
-    public static func areFilesIdentical(source: URL, destination: URL) -> Bool {
-        guard let sourceSize = fileSize(at: source),
-              let destSize = fileSize(at: destination),
-              let sourceDate = modificationDate(at: source),
-              let destDate = modificationDate(at: destination) else {
-            return false  // Assume different if we can't determine
-        }
-        // Compare size and modification time (within 1 second tolerance for filesystem differences)
-        return sourceSize == destSize && abs(sourceDate.timeIntervalSince(destDate)) < 1.0
     }
 
     /// Deletes a file with retry

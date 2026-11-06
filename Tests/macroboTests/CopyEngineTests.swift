@@ -198,4 +198,131 @@ final class CopyEngineTests: XCTestCase {
         let result = try await runCopy(options: options)
         XCTAssertEqual(result.filesCopied, 0)
     }
+
+    // MARK: - Scan phase (parallel compare, purge lookup)
+
+    private func setMtime(_ date: Date, _ relative: String, in dir: URL) throws {
+        try FileManager.default.setAttributes([.modificationDate: date],
+                                              ofItemAtPath: dir.appendingPathComponent(relative).path)
+    }
+
+    func testEnumerationRelativePathsThroughSymlinkedParent() throws {
+        // /tmp -> /private/tmp: relative paths must not depend on how the root is spelled
+        let base = URL(fileURLWithPath: "/tmp/macrobo-enum-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        createFile("a.txt", in: base)
+        createFile("sub/b.txt", in: base)
+        createFile("sub/deep/c.txt", in: base)
+        createFile("node_modules/x.js", in: base)
+        let result = try FileEnumerator.enumerateSource(
+            source: base, skipHidden: true, excludeDirs: ["node_modules"],
+            excludeFiles: [], includeFiles: [], minSize: nil, maxSize: nil
+        )
+        XCTAssertEqual(Set(result.files.map(\.relativePath)), ["/a.txt", "/sub/b.txt", "/sub/deep/c.txt"])
+        XCTAssertEqual(result.directoryRelativePaths, ["/sub", "/sub/deep"])
+        XCTAssertTrue(result.files.allSatisfy { $0.modificationDate != nil })
+    }
+
+    func testIncrementalRunAcrossManyFiles() async throws {
+        // Enough files to spread the compare across several workers and chunks
+        for i in 0..<400 { createFile("dir\(i % 10)/file\(i).txt", in: srcDir, content: "content \(i)") }
+        let options = CopyOptions(source: srcDir, destination: dstDir)
+        let first = try await runCopy(options: options)
+        XCTAssertEqual(first.filesCopied, 400)
+        createFile("dir1/file11.txt", in: srcDir, content: "changed and longer")
+        createFile("dir5/file105.txt", in: srcDir, content: "changed and longer")
+        createFile("dir9/new.txt", in: srcDir, content: "new")
+        let second = try await runCopy(options: options)
+        XCTAssertEqual(second.filesCopied, 3)
+        let third = try await runCopy(options: options)
+        XCTAssertEqual(third.filesCopied, 0)
+    }
+
+    func testMirrorKeepsDestinationFilesThatExistInSourceButAreNotCopied() async throws {
+        createFile("keep.txt", in: srcDir)
+        createFile("sub/nested.txt", in: srcDir)
+        createFile("skip.log", in: srcDir)          // excluded by pattern
+        createFile(".hidden", in: srcDir)           // skipped by the scan
+        createFile("cache/blob.bin", in: srcDir)    // excluded directory
+        createFile("skip.log", in: dstDir)
+        createFile(".hidden", in: dstDir)
+        createFile("cache/blob.bin", in: dstDir)
+        createFile("extra.txt", in: dstDir)
+        createFile("gone/old.txt", in: dstDir)
+        var options = CopyOptions(source: srcDir, destination: dstDir)
+        options.mirror = true
+        options.excludeFiles = ["*.log"]
+        options.excludeDirectories = ["cache"]
+        let result = try await runCopy(options: options)
+        XCTAssertEqual(result.filesFailed, 0)
+        let fm = FileManager.default
+        for kept in ["keep.txt", "sub/nested.txt", "skip.log", ".hidden", "cache/blob.bin"] {
+            XCTAssertTrue(fm.fileExists(atPath: dstDir.appendingPathComponent(kept).path), kept)
+        }
+        XCTAssertFalse(fm.fileExists(atPath: dstDir.appendingPathComponent("extra.txt").path))
+        XCTAssertFalse(fm.fileExists(atPath: dstDir.appendingPathComponent("gone").path))
+    }
+
+    func testMirrorThroughSymlinkedParentKeepsNestedFiles() async throws {
+        let base = URL(fileURLWithPath: "/tmp/macrobo-mirror-test-\(UUID().uuidString)")
+        let src = base.appendingPathComponent("src")
+        let dst = base.appendingPathComponent("dst")
+        defer { try? FileManager.default.removeItem(at: base) }
+        createFile("sub/keep.txt", in: src)
+        createFile("sub/extra.txt", in: dst)
+        var options = CopyOptions(source: src, destination: dst)
+        options.mirror = true
+        _ = try await runCopy(options: options)
+        let second = try await runCopy(options: options)
+        XCTAssertEqual(second.filesCopied, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dst.appendingPathComponent("sub/keep.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst.appendingPathComponent("sub/extra.txt").path))
+    }
+
+    func testExcludeOlderSkipsWhenDestinationIsNewer() async throws {
+        createFile("newer-dst.txt", in: srcDir, content: "source version")
+        createFile("older-dst.txt", in: srcDir, content: "source version")
+        createFile("newer-dst.txt", in: dstDir, content: "dest")
+        createFile("older-dst.txt", in: dstDir, content: "dest")
+        let now = Date()
+        try setMtime(now.addingTimeInterval(-100), "newer-dst.txt", in: srcDir)
+        try setMtime(now, "newer-dst.txt", in: dstDir)
+        try setMtime(now, "older-dst.txt", in: srcDir)
+        try setMtime(now.addingTimeInterval(-100), "older-dst.txt", in: dstDir)
+        var options = CopyOptions(source: srcDir, destination: dstDir)
+        options.excludeOlder = true
+        let result = try await runCopy(options: options)
+        XCTAssertEqual(result.filesCopied, 1)
+        let kept = try String(contentsOf: dstDir.appendingPathComponent("newer-dst.txt"), encoding: .utf8)
+        XCTAssertEqual(kept, "dest")
+    }
+
+    func testChecksumCopiesChangedContentOfSameSize() async throws {
+        createFile("file.txt", in: srcDir, content: "AAAA")
+        createFile("file.txt", in: dstDir, content: "BBBB")
+        try setMtime(Date().addingTimeInterval(-100), "file.txt", in: dstDir)
+        var options = CopyOptions(source: srcDir, destination: dstDir)
+        options.checksum = true
+        let result = try await runCopy(options: options)
+        XCTAssertEqual(result.filesCopied, 1)
+    }
+
+    func testIncludeSameRecopiesIdenticalFiles() async throws {
+        createFile("same.txt", in: srcDir)
+        var options = CopyOptions(source: srcDir, destination: dstDir)
+        _ = try await runCopy(options: options)
+        options.includeSame = true
+        let result = try await runCopy(options: options)
+        XCTAssertEqual(result.filesCopied, 1)
+    }
+
+    func testDestinationAttributesTreatDanglingSymlinkAsMissing() throws {
+        try FileManager.default.createDirectory(at: dstDir, withIntermediateDirectories: true)
+        let link = dstDir.appendingPathComponent("dangling")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "/nonexistent-\(UUID().uuidString)")
+        XCTAssertNil(DestinationComparator.destinationAttributes(atPath: link.path))
+        XCTAssertNil(DestinationComparator.destinationAttributes(atPath: dstDir.appendingPathComponent("missing").path))
+        createFile("real.txt", in: dstDir, content: "12345")
+        XCTAssertEqual(DestinationComparator.destinationAttributes(atPath: dstDir.appendingPathComponent("real.txt").path)?.size, 5)
+    }
 }

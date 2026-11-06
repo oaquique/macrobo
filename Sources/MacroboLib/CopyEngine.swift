@@ -9,6 +9,10 @@ public actor CopyEngine {
     private var result = CopyResult()
     private let resolvedSourcePath: String
     private let resolvedDestPath: String
+    /// Relative paths of every source file and directory the scan saw (for mirror/purge)
+    private var knownSourcePaths: Set<String> = []
+    /// Phase timings, written to the log file
+    private var scanTimings: (enumerate: TimeInterval, compare: TimeInterval, files: Int)?
 
     public init(options: CopyOptions, logger: Logger, progress: ProgressReporter) {
         self.options = options
@@ -54,6 +58,12 @@ public actor CopyEngine {
             // Gather files to copy (with sizes captured during enumeration)
             let filesToCopy = try await gatherSourceFiles()
             await progress.clear()
+            if let timings = scanTimings {
+                await logger.writeLogOnly(String(
+                    format: "Scan: %d files in %.1fs (enumerate %.1fs, compare %.1fs)",
+                    timings.files, timings.enumerate + timings.compare, timings.enumerate, timings.compare
+                ))
+            }
             let totalBytes = filesToCopy.reduce(UInt64(0)) { $0 + $1.size }
 
             // Print summary line after scanning
@@ -81,7 +91,9 @@ public actor CopyEngine {
 
             // Handle purge/mirror - delete extra files in destination
             if options.mirror || options.purge {
+                let purgeStart = Date()
                 await purgeExtraFiles()
+                await logger.writeLogOnly(String(format: "Purge scan and delete: %.1fs", Date().timeIntervalSince(purgeStart)))
             }
 
             // Finish up
@@ -139,10 +151,11 @@ public actor CopyEngine {
         }
 
         // Run enumeration in detached task to allow spinner to run
-        let candidates: [FileInfo]
+        let enumerateStart = Date()
+        let enumeration: SourceEnumeration
         do {
-            candidates = try await Task.detached {
-                try FileEnumerator.enumerateSourceFiles(
+            enumeration = try await Task.detached {
+                try FileEnumerator.enumerateSource(
                     source: sourceURL,
                     skipHidden: skipHidden,
                     excludeDirs: excludeDirs,
@@ -158,76 +171,85 @@ public actor CopyEngine {
         }
 
         spinnerTask.cancel()
+        let candidates = enumeration.files
+        let enumerateDuration = Date().timeIntervalSince(enumerateStart)
 
-        // Second pass: filter files that need copying (with progress updates)
+        if options.mirror || options.purge {
+            knownSourcePaths = enumeration.directoryRelativePaths
+            for file in candidates { knownSourcePaths.insert(file.relativePath) }
+        }
+
+        // Second pass: compare against the destination in parallel (one metadata call per file)
+        let compareStart = Date()
+        let settings = CompareSettings(
+            includeSame: options.includeSame,
+            checksum: options.checksum,
+            excludeOlder: options.excludeOlder
+        )
+        let counter = ScanCounter()
+        let compareProgressTask = Task {
+            while !Task.isCancelled {
+                let snapshot = counter.snapshot
+                await progress.updateScanProgress(scanned: snapshot.completed, found: snapshot.toCopy)
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            }
+        }
+        let verdicts = await DestinationComparator.compareAll(
+            candidates,
+            destinationBase: options.destination.path,
+            settings: settings,
+            counter: counter
+        )
+        compareProgressTask.cancel()
+
+        // Third pass: content checksums, sequential and throttled to protect NAS/network volumes
         var files: [FileInfo] = []
-        var lastUpdateTime = Date()
-        let fm = FileManager.default
         let destBase = options.destination.path
         var checksumCount = 0
         let checksumBatchSize = 100
         let checksumPauseNs: UInt64 = 500_000_000 // 500ms pause every batch
+        let scanned = candidates.count
+        var found = counter.snapshot.toCopy
 
-        for (index, fileInfo) in candidates.enumerated() {
-            // Update progress periodically (every 100ms)
-            let now = Date()
-            if now.timeIntervalSince(lastUpdateTime) >= 0.1 {
-                await progress.updateScanProgress(scanned: index + 1, found: files.count)
-                lastUpdateTime = now
-            }
-
-            // Build destination path using the captured relative path
-            let destPath = destBase + fileInfo.relativePath
-            let destURL = URL(fileURLWithPath: destPath)
-
-            if fm.fileExists(atPath: destPath) {
-                // Skip identical files (same size and modification time)
-                // Unless --include-same is set, which forces copying even identical files
-                if !options.includeSame && FileOperations.areFilesIdentical(source: fileInfo.url, destination: destURL) {
-                    continue
-                }
-                // Checksum mode: if size matches but mtime differs, compare file contents
-                if !options.includeSame && options.checksum {
-                    if let srcSize = FileOperations.fileSize(at: fileInfo.url),
-                       let dstSize = FileOperations.fileSize(at: destURL),
-                       srcSize == dstSize {
-                        // Show which file is being checksummed and keep spinner alive
-                        await progress.updateScanProgress(scanned: index + 1, found: files.count, checksumming: fileInfo.url.lastPathComponent)
-                        let scanned = index + 1
-                        let currentFound = files.count
-                        let fileName = fileInfo.url.lastPathComponent
-                        let spinnerTask = Task {
-                            while !Task.isCancelled {
-                                try? await Task.sleep(nanoseconds: 100_000_000)
-                                await self.progress.updateScanProgress(scanned: scanned, found: currentFound, checksumming: fileName)
-                            }
-                        }
-                        let identical = await Task.detached {
-                            FileOperations.areFileContentsIdentical(source: fileInfo.url, destination: destURL)
-                        }.value
-                        spinnerTask.cancel()
-                        lastUpdateTime = Date()
-                        checksumCount += 1
-                        // Pause periodically to avoid overwhelming NAS/network volumes
-                        if checksumCount % checksumBatchSize == 0 {
-                            try? await Task.sleep(nanoseconds: checksumPauseNs)
-                        }
-                        if identical {
-                            continue
-                        }
+        for (fileInfo, verdict) in zip(candidates, verdicts) {
+            switch verdict {
+            case .skip:
+                continue
+            case .copy:
+                files.append(fileInfo)
+            case .checksum(let skipIfDifferent):
+                let destURL = URL(fileURLWithPath: destBase + fileInfo.relativePath)
+                // Show which file is being checksummed and keep spinner alive
+                let fileName = fileInfo.url.lastPathComponent
+                let currentFound = found
+                await progress.updateScanProgress(scanned: scanned, found: currentFound, checksumming: fileName)
+                let spinnerTask = Task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        await self.progress.updateScanProgress(scanned: scanned, found: currentFound, checksumming: fileName)
                     }
                 }
-                // Skip if destination is newer and excludeOlder is set
-                if options.excludeOlder && !FileOperations.isSourceNewer(source: fileInfo.url, destination: destURL) {
+                let size = fileInfo.size
+                let identical = await Task.detached {
+                    FileOperations.areFileContentsIdentical(source: fileInfo.url, destination: destURL, sourceSize: size)
+                }.value
+                spinnerTask.cancel()
+                checksumCount += 1
+                // Pause periodically to avoid overwhelming NAS/network volumes
+                if checksumCount % checksumBatchSize == 0 {
+                    try? await Task.sleep(nanoseconds: checksumPauseNs)
+                }
+                if identical || skipIfDifferent {
                     continue
                 }
+                found += 1
+                files.append(fileInfo)
             }
-
-            files.append(fileInfo)
         }
 
         // Final progress update
-        await progress.updateScanProgress(scanned: candidates.count, found: files.count)
+        await progress.updateScanProgress(scanned: scanned, found: files.count)
+        scanTimings = (enumerateDuration, Date().timeIntervalSince(compareStart), candidates.count)
 
         return files
     }
@@ -399,7 +421,8 @@ public actor CopyEngine {
         let (filesToDelete, dirsToDelete) = gatherFilesToPurge(
             destination: options.destination,
             resolvedDestPath: resolvedDestPath,
-            resolvedSourcePath: resolvedSourcePath
+            resolvedSourcePath: resolvedSourcePath,
+            knownSourcePaths: knownSourcePaths
         )
 
         // Delete files
@@ -436,7 +459,8 @@ public actor CopyEngine {
     private nonisolated func gatherFilesToPurge(
         destination: URL,
         resolvedDestPath: String,
-        resolvedSourcePath: String
+        resolvedSourcePath: String,
+        knownSourcePaths: Set<String>
     ) -> (files: [URL], dirs: [URL]) {
         let fm = FileManager.default
         let enumerator = fm.enumerator(
@@ -458,10 +482,13 @@ public actor CopyEngine {
             } else {
                 relativePath = "/" + url.lastPathComponent
             }
+            // Paths the scan already saw exist in the source: no network round trip.
+            // Anything else (hidden, excluded, filtered, or spelled differently) falls
+            // back to an existence check on the source, as before.
+            if knownSourcePaths.contains(relativePath) { continue }
             let sourcePath = resolvedSourcePath + relativePath
-            let sourceURL = URL(fileURLWithPath: sourcePath)
 
-            if !fm.fileExists(atPath: sourceURL.path) {
+            if !fm.fileExists(atPath: sourcePath) {
                 if resourceValues?.isDirectory == true {
                     dirsToDelete.append(url)
                     enumerator.skipDescendants()

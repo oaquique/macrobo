@@ -5,12 +5,23 @@ public struct FileInfo: Sendable {
     public let url: URL
     public let size: UInt64
     public let relativePath: String  // Path relative to source root
+    /// Modification date captured during enumeration (nil if it could not be read)
+    public let modificationDate: Date?
 
-    public init(url: URL, size: UInt64, relativePath: String) {
+    public init(url: URL, size: UInt64, relativePath: String, modificationDate: Date? = nil) {
         self.url = url
         self.size = size
         self.relativePath = relativePath
+        self.modificationDate = modificationDate
     }
+}
+
+/// Result of a source enumeration: the files that passed the filters, plus the
+/// relative paths of every directory walked (used by mirror/purge to avoid a
+/// per-entry existence check on the source).
+public struct SourceEnumeration: Sendable {
+    public let files: [FileInfo]
+    public let directoryRelativePaths: Set<String>
 }
 
 /// Enumerates source files with filtering support
@@ -34,8 +45,16 @@ public struct FileEnumerator {
         return regex.firstMatch(in: name, range: range) != nil
     }
 
-    /// Enumerates source files synchronously with filtering
-    public static func enumerateSourceFiles(
+    /// Builds a relative path ("/a/b/file") from the last `level` components of a URL
+    /// returned by a directory enumerator. Pure string work: no file system calls.
+    static func relativePath(of url: URL, level: Int) -> String {
+        let components = url.pathComponents
+        guard level > 0, components.count > level else { return "/" + url.lastPathComponent }
+        return "/" + components.suffix(level).joined(separator: "/")
+    }
+
+    /// Enumerates source files synchronously with filtering, also returning walked directories
+    public static func enumerateSource(
         source: URL,
         skipHidden: Bool,
         excludeDirs: [String],
@@ -43,17 +62,15 @@ public struct FileEnumerator {
         includeFiles: [String],
         minSize: UInt64?,
         maxSize: UInt64?
-    ) throws -> [FileInfo] {
+    ) throws -> SourceEnumeration {
         let fm = FileManager.default
         var files: [FileInfo] = []
+        var directoryRelativePaths: Set<String> = []
 
         // Pre-compile all glob patterns once (instead of per-file)
         let excludeDirRegexes = excludeDirs.map { (pattern: $0, regex: compileGlobPattern($0)) }
         let excludeFileRegexes = excludeFiles.map { (pattern: $0, regex: compileGlobPattern($0)) }
         let includeFileRegexes = includeFiles.map { (pattern: $0, regex: compileGlobPattern($0)) }
-
-        // Standardize source path for consistent relative path calculation
-        let sourcePathStandardized = source.standardizedFileURL.path
 
         var enumeratorOptions: FileManager.DirectoryEnumerationOptions = []
         if skipHidden {
@@ -75,8 +92,8 @@ public struct FileEnumerator {
         }
 
         for case let url as URL in enumerator {
-            // Get resource values including size
-            let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey])
+            // Served from the values the enumerator prefetched: no extra file system call
+            let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
 
             if resourceValues?.isDirectory == true {
                 // Detect symlink cycles by resolving the real path
@@ -94,6 +111,7 @@ public struct FileEnumerator {
                     enumerator.skipDescendants()
                     continue
                 }
+                directoryRelativePaths.insert(relativePath(of: url, level: enumerator.level))
                 continue  // Don't add directories to file list
             }
 
@@ -112,31 +130,28 @@ public struct FileEnumerator {
                 if !shouldInclude { continue }
             }
 
-            // Check size constraints
-            let fileSize = UInt64(resourceValues?.fileSize ?? 0)
-            let actualSize = fileSize > 0 ? fileSize : (FileOperations.fileSize(at: url) ?? 0)
+            // Check size constraints (fall back to a stat only if the prefetched size is missing)
+            let actualSize: UInt64
+            if let prefetched = resourceValues?.fileSize {
+                actualSize = UInt64(prefetched)
+            } else {
+                actualSize = FileOperations.fileSize(at: url) ?? 0
+            }
 
             if let min = minSize, actualSize < min { continue }
             if let max = maxSize, actualSize > max { continue }
 
-            // Calculate relative path by removing source prefix
-            let urlResolved = url.resolvingSymlinksInPath().path
-            let sourceResolved = source.resolvingSymlinksInPath().path
-            let relativePath: String
-            if urlResolved.hasPrefix(sourceResolved) {
-                relativePath = String(urlResolved.dropFirst(sourceResolved.count))
-            } else {
-                let urlPathStandardized = url.standardizedFileURL.path
-                if urlPathStandardized.hasPrefix(sourcePathStandardized) {
-                    relativePath = String(urlPathStandardized.dropFirst(sourcePathStandardized.count))
-                } else {
-                    relativePath = "/" + url.lastPathComponent
-                }
-            }
-
-            files.append(FileInfo(url: url, size: actualSize, relativePath: relativePath))
+            // Relative path from the enumerator depth. The enumerator never descends into
+            // symlinked directories, so this equals the old "resolved path minus resolved
+            // source root" result without resolving symlinks for every file.
+            files.append(FileInfo(
+                url: url,
+                size: actualSize,
+                relativePath: relativePath(of: url, level: enumerator.level),
+                modificationDate: resourceValues?.contentModificationDate
+            ))
         }
 
-        return files
+        return SourceEnumeration(files: files, directoryRelativePaths: directoryRelativePaths)
     }
 }

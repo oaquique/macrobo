@@ -16,27 +16,42 @@ final class FileOperationsTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - areFilesIdentical
+    // MARK: - DestinationComparator.verdict
 
-    func testIdenticalFiles() {
-        let file = tempDir.appendingPathComponent("test.txt")
-        try! Data("hello world".utf8).write(to: file)
-        XCTAssertTrue(FileOperations.areFilesIdentical(source: file, destination: file))
+    private func info(_ url: URL) -> FileInfo {
+        let attrs = try! FileManager.default.attributesOfItem(atPath: url.path)
+        return FileInfo(url: url, size: attrs[.size] as! UInt64, relativePath: "/" + url.lastPathComponent,
+                        modificationDate: attrs[.modificationDate] as? Date)
     }
 
-    func testDifferentSizeFiles() {
+    private let defaults = CompareSettings(includeSame: false, checksum: false, excludeOlder: false)
+
+    func testVerdictSkipsIdenticalFile() {
+        let file = tempDir.appendingPathComponent("test.txt")
+        try! Data("hello world".utf8).write(to: file)
+        XCTAssertEqual(DestinationComparator.verdict(for: info(file), destinationPath: file.path, settings: defaults), .skip)
+    }
+
+    func testVerdictCopiesDifferentSize() {
         let src = tempDir.appendingPathComponent("src.txt")
         let dst = tempDir.appendingPathComponent("dst.txt")
         try! Data("short".utf8).write(to: src)
         try! Data("much longer content".utf8).write(to: dst)
-        XCTAssertFalse(FileOperations.areFilesIdentical(source: src, destination: dst))
+        XCTAssertEqual(DestinationComparator.verdict(for: info(src), destinationPath: dst.path, settings: defaults), .copy)
     }
 
-    func testNonexistentFile() {
+    func testVerdictCopiesMissingDestination() {
         let src = tempDir.appendingPathComponent("exists.txt")
-        let dst = tempDir.appendingPathComponent("missing.txt")
         try! Data("data".utf8).write(to: src)
-        XCTAssertFalse(FileOperations.areFilesIdentical(source: src, destination: dst))
+        let dst = tempDir.appendingPathComponent("missing.txt")
+        XCTAssertEqual(DestinationComparator.verdict(for: info(src), destinationPath: dst.path, settings: defaults), .copy)
+    }
+
+    func testVerdictFallsBackToStatWhenDateWasNotPrefetched() {
+        let file = tempDir.appendingPathComponent("nodate.txt")
+        try! Data("x".utf8).write(to: file)
+        let noDate = FileInfo(url: file, size: 1, relativePath: "/nodate.txt")
+        XCTAssertEqual(DestinationComparator.verdict(for: noDate, destinationPath: file.path, settings: defaults), .skip)
     }
 
     // MARK: - fileSize
@@ -58,19 +73,36 @@ final class FileOperationsTests: XCTestCase {
         XCTAssertNil(FileOperations.fileSize(at: file))
     }
 
-    // MARK: - isSourceNewer
+    // MARK: - DestinationComparator.verdict with --exclude-older / --checksum
 
-    func testSourceNewer() {
+    func testVerdictExcludeOlder() {
         let older = tempDir.appendingPathComponent("older.txt")
         try! Data("old".utf8).write(to: older)
-        let pastDate = Date().addingTimeInterval(-3600)
-        try! FileManager.default.setAttributes([.modificationDate: pastDate], ofItemAtPath: older.path)
-
+        try! FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3600)], ofItemAtPath: older.path)
         let newer = tempDir.appendingPathComponent("newer.txt")
-        try! Data("new".utf8).write(to: newer)
+        try! Data("newer".utf8).write(to: newer)
 
-        XCTAssertTrue(FileOperations.isSourceNewer(source: newer, destination: older))
-        XCTAssertFalse(FileOperations.isSourceNewer(source: older, destination: newer))
+        var settings = defaults
+        settings.excludeOlder = true
+        XCTAssertEqual(DestinationComparator.verdict(for: info(newer), destinationPath: older.path, settings: settings), .copy)
+        XCTAssertEqual(DestinationComparator.verdict(for: info(older), destinationPath: newer.path, settings: settings), .skip)
+    }
+
+    func testVerdictChecksumWhenSameSizeDifferentDate() {
+        let src = tempDir.appendingPathComponent("a.txt")
+        let dst = tempDir.appendingPathComponent("b.txt")
+        try! Data("same".utf8).write(to: src)
+        try! Data("diff".utf8).write(to: dst)
+        try! FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3600)], ofItemAtPath: dst.path)
+        var settings = defaults
+        settings.checksum = true
+        XCTAssertEqual(DestinationComparator.verdict(for: info(src), destinationPath: dst.path, settings: settings),
+                       .checksum(skipIfDifferent: false))
+        settings.excludeOlder = true
+        XCTAssertEqual(DestinationComparator.verdict(for: info(src), destinationPath: dst.path, settings: settings),
+                       .checksum(skipIfDifferent: false))
+        XCTAssertEqual(DestinationComparator.verdict(for: info(dst), destinationPath: src.path, settings: settings),
+                       .checksum(skipIfDifferent: true))
     }
 
     // MARK: - checksumFile

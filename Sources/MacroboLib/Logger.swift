@@ -206,6 +206,11 @@ public actor Logger {
         writeToFile(summary)
     }
 
+    /// Writes a line to the log file only (never to the terminal)
+    func writeLogOnly(_ message: String) {
+        writeToFile(message)
+    }
+
     private func writeToFile(_ message: String) {
         guard let handle = fileHandle,
               let data = "\(message)\n".data(using: .utf8) else { return }
