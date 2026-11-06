@@ -36,7 +36,7 @@ fi
 
 # Locate the built binary
 if [[ "$1" == "--universal" ]]; then
-    BINARY="$SCRIPT_DIR/.build/apple/Products/Release/macrobo"
+    BINARY=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/macrobo
 elif [[ "$1" == "--debug" ]]; then
     BINARY=$(swift build --show-bin-path)/macrobo
 else
