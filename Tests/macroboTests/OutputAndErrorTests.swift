@@ -186,3 +186,23 @@ final class OutputAndErrorTests: XCTestCase {
         }
     }
 }
+
+/// --bwlimit holds across many copy threads
+final class RateLimiterTests: XCTestCase {
+    func testManyThreadsStayWithinTheLimit() {
+        // 2 MB/s with a 2 MB burst: 6 MB from 16 threads must take at least 2 seconds
+        let limiter = RateLimiter(bytesPerSecond: 2_000_000)
+        let start = Date()
+        parallelForEach(count: 48, workers: 16) { _ in limiter.acquire(125_000) }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertGreaterThanOrEqual(elapsed, 1.9)
+        XCTAssertLessThan(elapsed, 3.0)
+    }
+
+    func testUnlimitedNeverWaits() {
+        let limiter = RateLimiter(bytesPerSecond: 0)
+        let start = Date()
+        for _ in 0..<1000 { limiter.acquire(10_000_000) }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.1)
+    }
+}

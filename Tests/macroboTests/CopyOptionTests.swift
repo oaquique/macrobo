@@ -106,7 +106,7 @@ final class CopyOptionTests: XCTestCase {
         var options = CopyOptions(source: src, destination: base)
         options.copyExtendedAttributes = false
         options.copyPermissions = false
-        _ = try await FileOperations.copyFile(from: file, to: target, options: options)
+        _ = try FileOperations.copyFile(from: file, to: target, options: options)
         let attrs = try fm.attributesOfItem(atPath: target.path)
         XCTAssertEqual((attrs[.posixPermissions] as! NSNumber).intValue, FileOperations.defaultFileMode)
         XCTAssertFalse(try FileOperations.listExtendedAttributes(at: target).contains("com.macrobo.test"))

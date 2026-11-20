@@ -623,32 +623,38 @@ public actor CopyEngine {
         let progressKey = fileInfo.relativePath
         await progress.fileStarted(key: progressKey, displayName: source.lastPathComponent, bytes: fileSize)
 
-        // Copy with retry
+        // Copy with retry. The copy itself runs on a dedicated thread: its file calls block
+        // (an NFS server can stall for minutes), and on the cooperative pool they would hold up
+        // every other task, the live display included, and cap --threads at the core count.
         var lastError: Error?
         let totalAttempts = 1 + options.retryCount  // 1 initial + N retries
+        let options = self.options
+        let limiter = rateLimiter
+        let updates = ProgressRelay(progress: progress, logger: logger, key: progressKey, name: source.lastPathComponent)
         for attempt in 0..<max(1, totalAttempts) {
-            do {
-                let bytes = try await FileOperations.copyFile(
-                    from: source,
-                    to: destURL,
-                    options: options,
-                    rateLimiter: rateLimiter,
-                    progressHandler: { current, total in
-                        await self.progress.bytesProgress(current: current, total: total, key: progressKey)
-                        await self.logger.logFileProgress(fileName: source.lastPathComponent, currentBytes: current, totalBytes: total)
-                    },
-                    syncHandler: {
-                        await self.progress.fileSyncing(key: progressKey)
+            let outcome: Result<UInt64, Error> = await runOnThread {
+                Result {
+                    let bytes = try FileOperations.copyFile(
+                        from: source,
+                        to: destURL,
+                        options: options,
+                        rateLimiter: limiter,
+                        progressHandler: { current, total in updates.bytes(current, of: total) },
+                        syncHandler: { updates.syncing() }
+                    )
+                    // Move mode - delete source after successful copy
+                    if options.moveFiles || options.moveAll {
+                        try FileOperations.deleteFile(at: source)
                     }
-                )
-
-                // Move mode - delete source after successful copy
-                if options.moveFiles || options.moveAll {
-                    try await FileOperations.deleteFile(at: source)
+                    return bytes
                 }
-
+            }
+            // Every progress update reaches the display before the file is reported done
+            await updates.delivered()
+            switch outcome {
+            case .success(let bytes):
                 return .copied(source: source, destination: destURL, bytes: bytes)
-            } catch {
+            case .failure(let error):
                 lastError = error
                 if attempt < totalAttempts - 1 {
                     try? await Task.sleep(nanoseconds: UInt64(options.retryWaitSeconds) * 1_000_000_000)

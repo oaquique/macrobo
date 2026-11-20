@@ -95,15 +95,16 @@ public struct FileOperations {
         return false
     }
 
-    /// Copies a file with support for resume and progress reporting
+    /// Copies a file with support for resume and progress reporting. Blocks the calling thread
+    /// (network file systems can stall for minutes), so call it on a dedicated thread.
     public static func copyFile(
         from source: URL,
         to destination: URL,
         options: CopyOptions,
         rateLimiter: RateLimiter? = nil,
-        progressHandler: ((UInt64, UInt64) async -> Void)? = nil,
-        syncHandler: (() async -> Void)? = nil
-    ) async throws -> UInt64 {
+        progressHandler: ((UInt64, UInt64) -> Void)? = nil,
+        syncHandler: (() -> Void)? = nil
+    ) throws -> UInt64 {
         let fm = FileManager.default
 
         // Get source file attributes
@@ -122,7 +123,7 @@ public struct FileOperations {
                 // A partial file from an interrupted earlier copy is no longer needed
                 try? fm.removeItem(atPath: destination.path + partialSuffix)
                 removeOmittedMetadata(at: destination, options: options)
-                await progressHandler?(sourceSize, sourceSize)
+                progressHandler?(sourceSize, sourceSize)
                 return sourceSize
             }
         }
@@ -148,16 +149,16 @@ public struct FileOperations {
 
         // For small files or no resume needed, use simple copy
         if resumeOffset == 0 && sourceSize < UInt64(chunkSize * 2) {
-            try await simpleFileCopy(from: source, to: destination, options: options)
+            try simpleFileCopy(from: source, to: destination, options: options)
             // Report 100% progress for small files
-            await progressHandler?(sourceSize, sourceSize)
+            progressHandler?(sourceSize, sourceSize)
             return sourceSize
         }
 
         // Streaming copy with resume support
         // Only fsync before rename when in move mode (source will be deleted after copy)
         let needsSync = options.moveFiles || options.moveAll
-        try await streamingCopy(
+        try streamingCopy(
             from: source,
             to: partialURL,
             finalDestination: destination,
@@ -183,7 +184,7 @@ public struct FileOperations {
     }
 
     /// Simple file copy using FileManager
-    private static func simpleFileCopy(from source: URL, to destination: URL, options: CopyOptions) async throws {
+    private static func simpleFileCopy(from source: URL, to destination: URL, options: CopyOptions) throws {
         let fm = FileManager.default
 
         // Remove existing file if present
@@ -211,9 +212,9 @@ public struct FileOperations {
         resumeOffset: UInt64,
         syncBeforeRename: Bool,
         rateLimiter: RateLimiter? = nil,
-        progressHandler: ((UInt64, UInt64) async -> Void)?,
-        syncHandler: (() async -> Void)?
-    ) async throws {
+        progressHandler: ((UInt64, UInt64) -> Void)?,
+        syncHandler: (() -> Void)?
+    ) throws {
         let fm = FileManager.default
 
         // Create parent directory if needed
@@ -280,14 +281,14 @@ public struct FileOperations {
                 }
                 try destHandle.write(contentsOf: chunk)
                 if let limiter = rateLimiter {
-                    await limiter.acquire(chunk.count)
+                    limiter.acquire(chunk.count)
                 }
                 totalWritten += UInt64(chunk.count)
             } catch {
                 throw MacroboError.copyFailed(source.lastPathComponent, error)
             }
 
-            await progressHandler?(totalWritten, sourceSize)
+            progressHandler?(totalWritten, sourceSize)
 
             if totalWritten >= sourceSize {
                 break
@@ -303,7 +304,7 @@ public struct FileOperations {
         // happen now, making the later mtime stamp final.
         try destHandle.synchronize()
         if syncBeforeRename {
-            await syncHandler?()
+            syncHandler?()
         }
 
         // Rename partial to final destination
@@ -576,8 +577,8 @@ public struct FileOperations {
         return total
     }
 
-    /// Deletes a file with retry
-    public static func deleteFile(at url: URL, retryCount: Int = 3, retryWait: Int = 1) async throws {
+    /// Deletes a file with retry. Blocks the calling thread.
+    public static func deleteFile(at url: URL, retryCount: Int = 3, retryWait: Int = 1) throws {
         var lastError: Error?
         let totalAttempts = 1 + retryCount  // 1 initial + N retries
 
@@ -588,7 +589,7 @@ public struct FileOperations {
             } catch {
                 lastError = error
                 if attempt < totalAttempts - 1 {
-                    try await Task.sleep(nanoseconds: UInt64(retryWait) * 1_000_000_000)
+                    Thread.sleep(forTimeInterval: TimeInterval(retryWait))
                 }
             }
         }

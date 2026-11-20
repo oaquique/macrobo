@@ -33,6 +33,63 @@ func runOnThread<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
     }
 }
 
+/// Carries one file's progress from its copy thread to the display and log: at most 10 updates
+/// a second (plus the last one), delivered in order.
+final class ProgressRelay: @unchecked Sendable {
+    private let progress: ProgressReporter
+    private let logger: Logger
+    private let key: String
+    private let name: String
+    private let lock = NSLock()
+    private var lastSent = Date.distantPast
+    /// Each update waits for the one before it, so they arrive in order
+    private var tail: Task<Void, Never>?
+
+    init(progress: ProgressReporter, logger: Logger, key: String, name: String) {
+        self.progress = progress
+        self.logger = logger
+        self.key = key
+        self.name = name
+    }
+
+    private func send(_ update: @escaping @Sendable () async -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        let previous = tail
+        tail = Task {
+            await previous?.value
+            await update()
+        }
+    }
+
+    func bytes(_ current: UInt64, of total: UInt64) {
+        let now = Date()
+        lock.lock()
+        let due = current >= total || now.timeIntervalSince(lastSent) >= 0.1
+        if due { lastSent = now }
+        lock.unlock()
+        guard due else { return }
+        let (progress, logger, key, name) = (self.progress, self.logger, self.key, self.name)
+        send {
+            await progress.bytesProgress(current: current, total: total, key: key)
+            await logger.logFileProgress(fileName: name, currentBytes: current, totalBytes: total)
+        }
+    }
+
+    func syncing() {
+        let (progress, key) = (self.progress, self.key)
+        send { await progress.fileSyncing(key: key) }
+    }
+
+    /// Waits until every update sent so far has been delivered
+    func delivered() async {
+        await lastUpdate()?.value
+    }
+
+    private func lastUpdate() -> Task<Void, Never>? {
+        lock.withLock { tail }
+    }
+}
+
 /// Runs `body(i)` for every i in 0..<count on `workers` threads and blocks until all are done.
 /// Call it from `runOnThread`, never on the cooperative pool.
 func parallelForEach(count: Int, workers: Int, _ body: @escaping @Sendable (Int) -> Void) {
