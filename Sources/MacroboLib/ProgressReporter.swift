@@ -74,26 +74,53 @@ public actor ProgressReporter {
     private var displayLines: Int = 0
     private var lastDisplayTime: Date = Date()
 
-    // Fixed widths for alignment
-    private let statsWidth = 55  // Fixed width for stats section on the right
-
     // Maximum number of completed files to show
     private let maxCompletedToShow = 20
 
-    public init(quiet: Bool = false, mode: CopyOptions.ProgressMode = .bar) {
+    /// Whether finished steps and other static lines print (bar and none modes, unless --quiet)
+    private let showSteps: Bool
+
+    /// - Parameters:
+    ///   - quiet: suppresses the live display (spinner lines, copy bars)
+    ///   - showSteps: prints the finished-step checklist and static lines such as dry-run lists
+    public init(quiet: Bool = false, mode: CopyOptions.ProgressMode = .bar, showSteps: Bool = false) {
         self.quiet = quiet
         self.mode = mode
+        self.showSteps = showSteps && mode != .json
+    }
+
+    /// Escapes a string for a JSON string literal
+    static func jsonEscape(_ s: String) -> String {
+        var out = ""
+        for scalar in s.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if scalar.value < 0x20 {
+                    out += String(format: "\\u%04x", scalar.value)
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+        }
+        return out
     }
 
     private func writeJSON(_ dict: [String: Any]) {
         var parts: [String] = []
         for (key, value) in dict.sorted(by: { $0.key < $1.key }) {
+            let k = Self.jsonEscape(key)
             switch value {
-            case let s as String: parts.append("\"\(key)\":\"\(s)\"")
-            case let n as Int: parts.append("\"\(key)\":\(n)")
-            case let n as UInt64: parts.append("\"\(key)\":\(n)")
-            case let n as Double: parts.append("\"\(key)\":\(String(format: "%.2f", n))")
-            default: parts.append("\"\(key)\":\"\(value)\"")
+            case let s as String: parts.append("\"\(k)\":\"\(Self.jsonEscape(s))\"")
+            case let n as Int: parts.append("\"\(k)\":\(n)")
+            case let n as UInt64: parts.append("\"\(k)\":\(n)")
+            case let n as Double: parts.append("\"\(k)\":\(String(format: "%.2f", n))")
+            case let b as Bool: parts.append("\"\(k)\":\(b)")
+            default: parts.append("\"\(k)\":\"\(Self.jsonEscape("\(value)"))\"")
             }
         }
         let json = "{\(parts.joined(separator: ","))}\n"
@@ -221,33 +248,62 @@ public actor ProgressReporter {
         updateDisplay()
     }
 
-    /// Shows a status message with spinner (for scanning phase)
-    func showStatus(_ message: String) {
+    // MARK: - Steps
+
+    /// Shows the live line of a running step, e.g. "/ Listing source         4,212 files, 803 folders".
+    /// In JSON mode emits a "step" event with the counts instead.
+    func stepRunning(id: String, name: String, detail: String, counts: [String: Int]) {
+        if mode == .json {
+            var event: [String: Any] = ["event": "step", "step": id, "state": "running"]
+            for (k, v) in counts { event[k] = v }
+            writeJSON(event)
+            return
+        }
         guard !quiet else { return }
         spinnerIndex = (spinnerIndex + 1) % Self.spinnerChars.count
-        let spinner = Self.spinnerChars[spinnerIndex]
-        let fullMessage = "\(spinner) \(message)"
-        let padded = fullMessage.padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0)
-        print("\r\(padded)", terminator: "")
+        let line = formatStepLine(mark: String(Self.spinnerChars[spinnerIndex]), name: name, detail: detail)
+        let fitted = String(line.prefix(max(1, terminalWidth - 1)))
+        let buf = "\r\u{1B}[K" + fitted
+        buf.utf8CString.withUnsafeBufferPointer { ptr in
+            _ = Darwin.write(STDOUT_FILENO, ptr.baseAddress, buf.utf8.count)
+        }
+    }
+
+    /// Replaces the live line with the finished step: "✓ Listed source   6,779 files, 1,337 folders   0.6 s"
+    func stepDone(id: String, name: String, detail: String, seconds: TimeInterval, counts: [String: Int]) {
+        if mode == .json {
+            var event: [String: Any] = ["event": "step", "step": id, "state": "done", "seconds": seconds]
+            for (k, v) in counts { event[k] = v }
+            writeJSON(event)
+            return
+        }
+        let clear = quiet ? "" : "\r\u{1B}[K"
+        guard showSteps else {
+            if !clear.isEmpty { print(clear, terminator: ""); fflush(stdout) }
+            return
+        }
+        print(clear + formatStepLine(mark: "✓", name: name, detail: detail, seconds: seconds))
         fflush(stdout)
     }
 
-    /// Updates scanning progress
-    func updateScanProgress(scanned: Int, found: Int, checksumming: String? = nil) {
-        guard !quiet else { return }
-        spinnerIndex = (spinnerIndex + 1) % Self.spinnerChars.count
-        let spinner = Self.spinnerChars[spinnerIndex]
-        var message = "\(spinner) Scanning: \(scanned) files checked, \(found) to copy..."
-        if let name = checksumming {
-            let available = terminalWidth - 1 - message.count - 15 // " checksumming: " prefix
-            if available > 3 {
-                let truncated = name.count > available ? "..." + name.suffix(available - 3) : name
-                message += " checksumming: \(truncated)"
-            }
-        }
-        let padded = message.padding(toLength: terminalWidth - 1, withPad: " ", startingAt: 0)
-        print("\r\(padded)", terminator: "")
+    /// Prints a static line (a dry-run entry, a blank separator) in bar and none modes
+    func line(_ text: String) {
+        guard showSteps else { return }
+        print(text)
         fflush(stdout)
+    }
+
+    /// A dry-run entry. JSON mode gets a "would_copy" / "would_delete" event instead of text.
+    func wouldChange(_ action: String, path: String, bytes: UInt64? = nil, folder: Bool = false) {
+        if mode == .json {
+            var event: [String: Any] = ["event": "would_\(action)", "path": path]
+            if let bytes { event["bytes"] = bytes }
+            if folder { event["folder"] = true }
+            writeJSON(event)
+            return
+        }
+        let suffix = folder ? "/ (folder)" : bytes.map { " (\(formatBytes($0)))" } ?? ""
+        line("  WOULD \(action.uppercased()): \(path)\(suffix)")
     }
 
     /// Clears the progress display

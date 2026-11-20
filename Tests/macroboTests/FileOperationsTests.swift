@@ -177,4 +177,15 @@ final class FileOperationsTests: XCTestCase {
         let dst = tempDir.appendingPathComponent("dst_file.txt").path
         XCTAssertTrue(FileOperations.isSameAPFSVolume(source: src, destination: dst))
     }
+
+    func testSameVolumeDetectionWhenDestinationFolderDoesNotExistYet() {
+        let dst = tempDir.appendingPathComponent("not/created/yet/file.txt").path
+        XCTAssertTrue(FileOperations.isSameAPFSVolume(source: tempDir.path, destination: dst))
+    }
+
+    func testDifferentVolumesAreNotSame() {
+        // /dev is devfs, never the same APFS volume as the temp folder
+        XCTAssertFalse(FileOperations.isSameAPFSVolume(source: tempDir.path, destination: "/dev/null"))
+        XCTAssertFalse(FileOperations.isSameAPFSVolume(source: "/dev", destination: tempDir.appendingPathComponent("x").path))
+    }
 }

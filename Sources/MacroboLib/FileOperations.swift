@@ -7,25 +7,28 @@ public struct FileOperations {
     public static let partialSuffix = ".macrobo-partial"
     private static let nocacheThreshold: UInt64 = 10 * 1024 * 1024  // 10MB
 
-    /// Checks if two paths are on the same APFS volume using URL resource values
+    /// Checks if two paths are on the same APFS volume. Runs once per copied file, so it uses
+    /// statfs (one system call) rather than URL volume resource values, which query IOKit for
+    /// the volume's format and encryption state and dominated the time to copy small files.
+    /// The destination's folder may not exist yet: its nearest existing ancestor decides.
     public static func isSameAPFSVolume(source: String, destination: String) -> Bool {
-        let srcURL = URL(fileURLWithPath: source)
-        let dstDir = (destination as NSString).deletingLastPathComponent
-        let dstURL = URL(fileURLWithPath: dstDir)
-        let keys: Set<URLResourceKey> = [.volumeIdentifierKey, .volumeLocalizedFormatDescriptionKey]
-        guard let srcVals = try? srcURL.resourceValues(forKeys: keys),
-              let dstVals = try? dstURL.resourceValues(forKeys: keys) else {
-            return false
+        var src = statfs()
+        guard statfs(source, &src) == 0, fsTypeName(src) == "apfs" else { return false }
+
+        var dir = (destination as NSString).deletingLastPathComponent
+        var dst = statfs()
+        while statfs(dir, &dst) != 0 {
+            guard errno == ENOENT, dir != "/", !dir.isEmpty else { return false }
+            dir = (dir as NSString).deletingLastPathComponent
         }
-        guard let srcFormat = srcVals.volumeLocalizedFormatDescription,
-              srcFormat.hasPrefix("APFS") else {
-            return false
-        }
-        guard let srcId = srcVals.volumeIdentifier as? NSObject,
-              let dstId = dstVals.volumeIdentifier as? NSObject else {
-            return false
-        }
-        return srcId == dstId
+        return fsTypeName(dst) == "apfs"
+            && src.f_fsid.val.0 == dst.f_fsid.val.0
+            && src.f_fsid.val.1 == dst.f_fsid.val.1
+    }
+
+    private static func fsTypeName(_ info: statfs) -> String {
+        var copy = info
+        return withUnsafeBytes(of: &copy.f_fstypename) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
     }
 
     /// Attempts an APFS clone. Returns true if successful, false if fallback needed.
@@ -67,6 +70,9 @@ public struct FileOperations {
                 try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
             }
             if tryCloneFile(from: source, to: destination) {
+                // A partial file from an interrupted earlier copy is no longer needed
+                try? fm.removeItem(atPath: destination.path + partialSuffix)
+                removeOmittedMetadata(at: destination, options: options)
                 await progressHandler?(sourceSize, sourceSize)
                 return sourceSize
             }
@@ -110,7 +116,7 @@ public struct FileOperations {
         )
 
         // Copy attributes
-        if options.copyAttributes || options.copyTimestamps || options.copyPermissions {
+        if options.keepsTimestamps || options.keepsPermissions {
             try copyAttributes(from: source, to: destination, options: options)
         }
 
@@ -137,17 +143,9 @@ public struct FileOperations {
             try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
         }
 
-        // Copy file
+        // Copy file (FileManager carries timestamps, permissions and extended attributes over)
         try fm.copyItem(at: source, to: destination)
-
-        // Adjust attributes if needed
-        if options.copyAttributes || options.copyTimestamps || options.copyPermissions {
-            try copyAttributes(from: source, to: destination, options: options)
-        }
-
-        if options.copyExtendedAttributes {
-            try copyExtendedAttributes(from: source, to: destination)
-        }
+        removeOmittedMetadata(at: destination, options: options)
     }
 
     /// Streaming copy with progress and resume support
@@ -267,7 +265,7 @@ public struct FileOperations {
         let sourceAttrs = try fm.attributesOfItem(atPath: source.path)
         var destAttrs: [FileAttributeKey: Any] = [:]
 
-        if options.copyTimestamps {
+        if options.keepsTimestamps {
             if let modDate = sourceAttrs[.modificationDate] {
                 destAttrs[.modificationDate] = modDate
             }
@@ -276,7 +274,7 @@ public struct FileOperations {
             }
         }
 
-        if options.copyPermissions {
+        if options.keepsPermissions {
             if let posixPerms = sourceAttrs[.posixPermissions] {
                 destAttrs[.posixPermissions] = posixPerms
             }
@@ -284,6 +282,38 @@ public struct FileOperations {
 
         if !destAttrs.isEmpty {
             try fm.setAttributes(destAttrs, ofItemAtPath: destination.path)
+        }
+    }
+
+    /// Permissions a newly created file gets under this process's umask (0644 with the usual
+    /// 022). Read once at startup: umask() can only be read by setting it, which isn't
+    /// safe while other threads create files.
+    public static let defaultFileMode: Int = {
+        let mask = umask(0)
+        umask(mask)
+        return 0o666 & ~Int(mask)
+    }()
+
+    /// clonefile and FileManager.copyItem carry every piece of metadata over. Takes off what the
+    /// options leave out (--no-timestamps, --no-permissions, --no-attributes, --no-xattr), so
+    /// every copy path follows the same options. Best effort: the contents are already copied.
+    static func removeOmittedMetadata(at destination: URL, options: CopyOptions) {
+        if !options.copyExtendedAttributes, let names = try? listExtendedAttributes(at: destination) {
+            for name in names {
+                _ = removexattr(destination.path, name, XATTR_NOFOLLOW)
+            }
+        }
+        var attributes: [FileAttributeKey: Any] = [:]
+        if !options.keepsTimestamps {
+            let now = Date()
+            attributes[.modificationDate] = now
+            attributes[.creationDate] = now
+        }
+        if !options.keepsPermissions {
+            attributes[.posixPermissions] = defaultFileMode
+        }
+        if !attributes.isEmpty {
+            try? FileManager.default.setAttributes(attributes, ofItemAtPath: destination.path)
         }
     }
 
@@ -432,15 +462,64 @@ public struct FileOperations {
         return hasher.finalize()
     }
 
-    /// Checks if two same-sized files have identical content by comparing lightweight checksums.
-    /// Reads first, middle, and last 4KB of each file — ~24KB total I/O per comparison.
-    public static func areFileContentsIdentical(source: URL, destination: URL, sourceSize: UInt64? = nil) -> Bool {
+    /// Checks whether two same-sized files have identical contents. Compares the first, middle
+    /// and last 4KB of each (~24KB of reads, so a network volume costs round trips, not bandwidth).
+    /// With `full`, files whose samples match are then compared byte for byte, stopping at the
+    /// first difference. A file that can't be read counts as different (it gets copied).
+    public static func areFileContentsIdentical(source: URL, destination: URL, sourceSize: UInt64? = nil, full: Bool = false) -> Bool {
         let size = sourceSize ?? fileSize(at: source)
         guard let srcHash = try? checksumFile(at: source, fileSize: size),
               let dstHash = try? checksumFile(at: destination, fileSize: size) else {
             return false
         }
-        return srcHash == dstHash
+        guard srcHash == dstHash else { return false }
+        // Small files were read whole by the sample pass
+        guard full, let size, size > UInt64(sampleSize * 3) else { return true }
+        return (try? fullContentsEqual(source, destination)) ?? false
+    }
+
+    /// Streams both files side by side and compares every byte, stopping at the first difference.
+    /// Large files bypass the page cache so a big pass doesn't evict everything else.
+    static func fullContentsEqual(_ a: URL, _ b: URL) throws -> Bool {
+        let fdA = open(a.path, O_RDONLY)
+        guard fdA >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { close(fdA) }
+        let fdB = open(b.path, O_RDONLY)
+        guard fdB >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { close(fdB) }
+        if (fileSize(at: a) ?? 0) >= nocacheThreshold {
+            _ = fcntl(fdA, F_NOCACHE, 1)
+            _ = fcntl(fdB, F_NOCACHE, 1)
+        }
+
+        let bufferSize = chunkSize * 4
+        let bufA = UnsafeMutableRawPointer.allocate(byteCount: bufferSize, alignment: 16)
+        let bufB = UnsafeMutableRawPointer.allocate(byteCount: bufferSize, alignment: 16)
+        defer { bufA.deallocate(); bufB.deallocate() }
+
+        while true {
+            let readA = readFully(fdA, bufA, bufferSize)
+            let readB = readFully(fdB, bufB, bufferSize)
+            guard readA >= 0, readB >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            if readA != readB { return false }
+            if readA == 0 { return true }
+            if memcmp(bufA, bufB, readA) != 0 { return false }
+        }
+    }
+
+    /// Reads up to `count` bytes, retrying short reads (common on network volumes). -1 on error.
+    private static func readFully(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ count: Int) -> Int {
+        var total = 0
+        while total < count {
+            let n = read(fd, buffer + total, count - total)
+            if n < 0 {
+                if errno == EINTR { continue }
+                return -1
+            }
+            if n == 0 { break }
+            total += n
+        }
+        return total
     }
 
     /// Deletes a file with retry

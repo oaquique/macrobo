@@ -34,6 +34,8 @@ public struct ConfigFile {
             case "source", "destination": break
             case "mirror": if value.lowercased() == "true" { options.mirror = true }
             case "purge": if value.lowercased() == "true" { options.purge = true }
+            case "allow-mass-delete": if value.lowercased() == "true" { options.allowMassDelete = true }
+            case "skip-hidden": if value.lowercased() == "true" { options.skipHidden = true }
             case "threads": if let n = Int(value) { options.threadCount = n }
             case "retry": if let n = Int(value) { options.retryCount = n }
             case "wait": if let n = Int(value) { options.retryWaitSeconds = n }
@@ -44,6 +46,7 @@ public struct ConfigFile {
             case "exclude-extra": if value.lowercased() == "true" { options.excludeExtra = true }
             case "include-same": if value.lowercased() == "true" { options.includeSame = true }
             case "checksum": if value.lowercased() == "true" { options.checksum = true }
+            case "checksum-full": if value.lowercased() == "true" { options.checksumFull = true }
             case "max-size": if let s = parseSize(value) { options.maxFileSize = s }
             case "min-size": if let s = parseSize(value) { options.minFileSize = s }
             case "bwlimit": if let s = parseSize(value) { options.bandwidthLimit = s }

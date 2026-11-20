@@ -42,6 +42,17 @@ public struct CopyResult {
     public var startTime: Date = Date()
     public var endTime: Date?
 
+    // Dry run: what a real run would do
+    public var isDryRun = false
+    public var showsCopies = true
+    public var showsDeletes = false
+    public var wouldCopyFiles = 0
+    public var wouldCopyBytes: UInt64 = 0
+    public var wouldCopyFolders = 0
+    public var wouldDeleteFiles = 0
+    public var wouldDeleteFolders = 0
+    public var unchangedFiles = 0
+
     public init() {}
 
     /// Total files processed
@@ -78,32 +89,47 @@ public struct CopyResult {
         lines.append(separator)
         lines.append("")
 
-        // Directories section
-        lines.append(row("Directories created", "\(directoriesCreated)"))
-        if directoriesDeleted > 0 {
-            lines.append(row("Directories deleted", "\(directoriesDeleted)"))
-        }
-        lines.append("")
+        if isDryRun {
+            if showsCopies {
+                var copy = "\(formatCount(wouldCopyFiles, "file")) (\(formatBytes(wouldCopyBytes, precision: 1)))"
+                if wouldCopyFolders > 0 { copy += ", \(formatCount(wouldCopyFolders, "empty folder"))" }
+                lines.append(row("Would copy", copy))
+            }
+            if showsDeletes {
+                lines.append(row("Would delete", "\(formatCount(wouldDeleteFiles, "file")), \(formatCount(wouldDeleteFolders, "folder"))"))
+            }
+            if showsCopies {
+                lines.append(row("Unchanged", formatCount(unchangedFiles, "file")))
+            }
+            lines.append("")
+        } else {
+            // Directories section
+            lines.append(row("Directories created", formatCount(directoriesCreated)))
+            if directoriesDeleted > 0 {
+                lines.append(row("Directories deleted", formatCount(directoriesDeleted)))
+            }
+            lines.append("")
 
-        // Files section
-        lines.append(row("Files copied", "\(filesCopied)"))
-        lines.append(row("Files skipped", "\(filesSkipped)"))
-        if filesFailed > 0 {
-            lines.append(row("Files failed", "\(filesFailed)"))
-        }
-        if filesDeleted > 0 {
-            lines.append(row("Files deleted", "\(filesDeleted)"))
-        }
-        lines.append("")
+            // Files section
+            lines.append(row("Files copied", formatCount(filesCopied)))
+            lines.append(row("Files skipped", formatCount(filesSkipped)))
+            if filesFailed > 0 {
+                lines.append(row("Files failed", formatCount(filesFailed)))
+            }
+            if filesDeleted > 0 {
+                lines.append(row("Files deleted", formatCount(filesDeleted)))
+            }
+            lines.append("")
 
-        // Stats section
-        lines.append(row("Bytes copied", formatBytes(bytesCopied)))
-        if bytesSkipped > 0 {
-            lines.append(row("Bytes skipped", formatBytes(bytesSkipped)))
+            // Stats section
+            lines.append(row("Bytes copied", formatBytes(bytesCopied)))
+            if bytesSkipped > 0 {
+                lines.append(row("Bytes skipped", formatBytes(bytesSkipped)))
+            }
+            lines.append(row("Speed", "\(formatBytes(UInt64(bytesPerSecond)))/s"))
+            lines.append(row("Duration", formatDuration(duration)))
+            lines.append("")
         }
-        lines.append(row("Speed", "\(formatBytes(UInt64(bytesPerSecond)))/s"))
-        lines.append(row("Duration", formatDuration(duration)))
-        lines.append("")
 
         // Errors section
         if !errors.isEmpty {
@@ -112,7 +138,7 @@ public struct CopyResult {
                 lines.append("   \(path): \(error.localizedDescription)")
             }
             if errors.count > 10 {
-                lines.append("   ... and \(errors.count - 10) more errors")
+                lines.append("   ... and \(formatCount(errors.count - 10, "more error"))")
             }
             lines.append("")
         }

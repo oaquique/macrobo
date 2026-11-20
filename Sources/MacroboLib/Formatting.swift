@@ -81,6 +81,54 @@ public func parseSize(_ sizeStr: String) -> UInt64? {
     }
 }
 
+/// Formats a count with thousands separators ("6,779"), independent of the user's locale
+public func formatCount(_ n: Int) -> String {
+    let digits = String(abs(n))
+    var grouped = ""
+    for (i, ch) in digits.enumerated() {
+        if i > 0 && (digits.count - i) % 3 == 0 { grouped.append(",") }
+        grouped.append(ch)
+    }
+    return n < 0 ? "-" + grouped : grouped
+}
+
+/// "1 file", "6,779 files"
+public func formatCount(_ n: Int, _ singular: String, _ plural: String? = nil) -> String {
+    "\(formatCount(n)) \(n == 1 ? singular : (plural ?? singular + "s"))"
+}
+
+/// Seconds for a finished step: "0.6 s", "42.0 s", or "02m13s" from 100 seconds up
+public func formatStepSeconds(_ seconds: TimeInterval) -> String {
+    seconds < 100 ? String(format: "%.1f s", seconds) : formatDuration(seconds, compact: true)
+}
+
+/// One line of the step checklist:
+/// "✓ Listed source        6,779 files, 1,337 folders                       0.6 s"
+/// The name takes 21 columns; the time is right-aligned to end at column 79 (77 without a mark),
+/// so every finished step's time lines up. Text too long for that is followed by two spaces.
+public func formatStepLine(mark: String, name: String, detail: String, seconds: TimeInterval? = nil) -> String {
+    let paddedName = name.count < 21 ? name + String(repeating: " ", count: 21 - name.count) : name + " "
+    let head = (mark.isEmpty ? "" : mark + " ") + paddedName + detail
+    guard let seconds else { return head }
+    let time = formatStepSeconds(seconds)
+    let lineEnd = mark.isEmpty ? 77 : 79
+    let gap = lineEnd - head.count - time.count
+    return head + String(repeating: " ", count: max(2, gap)) + time
+}
+
+/// "about 14 min left" for a step with a known total, once it has run for 5 seconds and made
+/// progress (earlier estimates jump around). Nil while there is no estimate yet.
+public func formatTimeLeft(elapsed: TimeInterval, done: Double, total: Double) -> String? {
+    guard elapsed >= 5, done > 0, total > done else { return nil }
+    let left = elapsed / done * (total - done)
+    if left < 60 { return "under a minute left" }
+    let minutes = Int((left / 60).rounded(.up))
+    if minutes < 60 { return "about \(minutes) min left" }
+    let hours = minutes / 60
+    let rest = minutes % 60
+    return rest == 0 ? "about \(hours) h left" : "about \(hours) h \(rest) min left"
+}
+
 /// Terminal dimension utilities
 public enum Terminal {
     public static var width: Int {

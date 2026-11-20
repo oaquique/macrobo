@@ -22,6 +22,9 @@ public struct FileInfo: Sendable {
 public struct SourceEnumeration: Sendable {
     public let files: [FileInfo]
     public let directoryRelativePaths: Set<String>
+    /// Directories that couldn't be listed, with the reason. Their contents are unknown,
+    /// so a purge must not delete anything under them.
+    public var unreadableDirectories: [(relativePath: String, reason: String)] = []
 }
 
 /// Enumerates source files with filtering support
@@ -45,15 +48,12 @@ public struct FileEnumerator {
         return regex.firstMatch(in: name, range: range) != nil
     }
 
-    /// Builds a relative path ("/a/b/file") from the last `level` components of a URL
-    /// returned by a directory enumerator. Pure string work: no file system calls.
-    static func relativePath(of url: URL, level: Int) -> String {
-        let components = url.pathComponents
-        guard level > 0, components.count > level else { return "/" + url.lastPathComponent }
-        return "/" + components.suffix(level).joined(separator: "/")
-    }
+    /// Slots in the live counts passed to `enumerateSource`
+    public static let filesSlot = 0
+    public static let foldersSlot = 1
 
-    /// Enumerates source files synchronously with filtering, also returning walked directories
+    /// Lists the source on several threads with filtering, also returning walked directories.
+    /// Blocks until done; `counts` (slots `filesSlot`, `foldersSlot`) updates as it goes.
     public static func enumerateSource(
         source: URL,
         skipHidden: Bool,
@@ -61,97 +61,84 @@ public struct FileEnumerator {
         excludeFiles: [String],
         includeFiles: [String],
         minSize: UInt64?,
-        maxSize: UInt64?
+        maxSize: UInt64?,
+        counts: LiveCounts = LiveCounts(slots: 2),
+        workers: Int = 16
     ) throws -> SourceEnumeration {
-        let fm = FileManager.default
-        var files: [FileInfo] = []
-        var directoryRelativePaths: Set<String> = []
-
         // Pre-compile all glob patterns once (instead of per-file)
         let excludeDirRegexes = excludeDirs.map { (pattern: $0, regex: compileGlobPattern($0)) }
         let excludeFileRegexes = excludeFiles.map { (pattern: $0, regex: compileGlobPattern($0)) }
         let includeFileRegexes = includeFiles.map { (pattern: $0, regex: compileGlobPattern($0)) }
 
-        var enumeratorOptions: FileManager.DirectoryEnumerationOptions = []
-        if skipHidden {
-            enumeratorOptions.insert(.skipsHiddenFiles)
-        }
+        let lock = NSLock()
+        var files: [FileInfo] = []
+        var directoryRelativePaths: Set<String> = []
+        var unreadable: [(relativePath: String, reason: String)] = []
 
-        // Resolve symlinks in source to detect cycles
-        let resolvedSource = source.resolvingSymlinksInPath()
-        var visitedDirs: Set<String> = [resolvedSource.path]
+        // Symlinked directories are never followed (they list as symlinks, not directories),
+        // so the walk can't loop.
+        try ParallelWalker.walk(
+            root: source,
+            rootContext: (),
+            keys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+            skipHidden: skipHidden,
+            workers: workers,
+            unreadable: { dir, error in
+                lock.lock()
+                unreadable.append((dir.relativePath, (error as NSError).localizedFailureReason ?? error.localizedDescription))
+                lock.unlock()
+            },
+            visit: { _, entries in
+                var subdirs: [ParallelWalker.Directory<Void>] = []
+                var batch: [FileInfo] = []
+                for entry in entries {
+                    if entry.isDirectory {
+                        let excluded = excludeDirRegexes.contains { matches(entry.name, regex: $0.regex, fallbackPattern: $0.pattern) }
+                        if excluded { continue }
+                        subdirs.append(.init(url: entry.url, relativePath: entry.relativePath, context: ()))
+                        continue
+                    }
 
-        let enumerator = fm.enumerator(
-            at: source,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey],
-            options: enumeratorOptions
+                    // Skip non-regular files (symlinks, sockets, ...)
+                    guard entry.isRegularFile else { continue }
+
+                    if excludeFileRegexes.contains(where: { matches(entry.name, regex: $0.regex, fallbackPattern: $0.pattern) }) { continue }
+                    if !includeFileRegexes.isEmpty
+                        && !includeFileRegexes.contains(where: { matches(entry.name, regex: $0.regex, fallbackPattern: $0.pattern) }) { continue }
+
+                    // Size from the prefetched values (fall back to a stat only if missing)
+                    let size: UInt64
+                    if let prefetched = entry.values?.fileSize {
+                        size = UInt64(prefetched)
+                    } else {
+                        size = FileOperations.fileSize(at: entry.url) ?? 0
+                    }
+                    if let min = minSize, size < min { continue }
+                    if let max = maxSize, size > max { continue }
+
+                    batch.append(FileInfo(
+                        url: entry.url,
+                        size: size,
+                        relativePath: entry.relativePath,
+                        modificationDate: entry.values?.contentModificationDate
+                    ))
+                }
+                lock.lock()
+                files.append(contentsOf: batch)
+                for dir in subdirs { directoryRelativePaths.insert(dir.relativePath) }
+                lock.unlock()
+                counts.add(filesSlot, batch.count)
+                counts.add(foldersSlot, subdirs.count)
+                return subdirs
+            }
         )
 
-        guard let enumerator = enumerator else {
-            throw MacroboError.sourceNotFound(source.path)
-        }
-
-        for case let url as URL in enumerator {
-            // Served from the values the enumerator prefetched: no extra file system call
-            let resourceValues = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
-
-            if resourceValues?.isDirectory == true {
-                // Detect symlink cycles by resolving the real path
-                let resolvedDir = url.resolvingSymlinksInPath().path
-                if visitedDirs.contains(resolvedDir) {
-                    enumerator.skipDescendants()
-                    continue
-                }
-                visitedDirs.insert(resolvedDir)
-
-                // Skip excluded directories
-                let dirName = url.lastPathComponent
-                let shouldSkip = excludeDirRegexes.contains { matches(dirName, regex: $0.regex, fallbackPattern: $0.pattern) }
-                if shouldSkip {
-                    enumerator.skipDescendants()
-                    continue
-                }
-                directoryRelativePaths.insert(relativePath(of: url, level: enumerator.level))
-                continue  // Don't add directories to file list
-            }
-
-            // Skip non-regular files
-            guard resourceValues?.isRegularFile == true else { continue }
-
-            let fileName = url.lastPathComponent
-
-            // Check exclude patterns
-            let shouldExclude = excludeFileRegexes.contains { matches(fileName, regex: $0.regex, fallbackPattern: $0.pattern) }
-            if shouldExclude { continue }
-
-            // Check include patterns (if specified)
-            if !includeFileRegexes.isEmpty {
-                let shouldInclude = includeFileRegexes.contains { matches(fileName, regex: $0.regex, fallbackPattern: $0.pattern) }
-                if !shouldInclude { continue }
-            }
-
-            // Check size constraints (fall back to a stat only if the prefetched size is missing)
-            let actualSize: UInt64
-            if let prefetched = resourceValues?.fileSize {
-                actualSize = UInt64(prefetched)
-            } else {
-                actualSize = FileOperations.fileSize(at: url) ?? 0
-            }
-
-            if let min = minSize, actualSize < min { continue }
-            if let max = maxSize, actualSize > max { continue }
-
-            // Relative path from the enumerator depth. The enumerator never descends into
-            // symlinked directories, so this equals the old "resolved path minus resolved
-            // source root" result without resolving symlinks for every file.
-            files.append(FileInfo(
-                url: url,
-                size: actualSize,
-                relativePath: relativePath(of: url, level: enumerator.level),
-                modificationDate: resourceValues?.contentModificationDate
-            ))
-        }
-
-        return SourceEnumeration(files: files, directoryRelativePaths: directoryRelativePaths)
+        // Directories finish in any order; a stable order keeps runs and logs predictable
+        files.sort { $0.relativePath < $1.relativePath }
+        return SourceEnumeration(
+            files: files,
+            directoryRelativePaths: directoryRelativePaths,
+            unreadableDirectories: unreadable.sorted { $0.relativePath < $1.relativePath }
+        )
     }
 }

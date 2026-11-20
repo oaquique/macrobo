@@ -29,8 +29,11 @@ macrobo /source /dest --mirror
 # Multi-threaded with exclusions
 macrobo /source /dest --threads 16 --exclude-dirs .git node_modules
 
-# Dry run to preview what would be copied
-macrobo /source /dest --list
+# Only delete destination files that aren't in the source (copies nothing)
+macrobo /source /dest --purge
+
+# Dry run: list every file a mirror would copy and delete, changing nothing
+macrobo /source /dest --mirror --dry-run
 
 # Move files instead of copying
 macrobo /source /dest --move
@@ -41,9 +44,17 @@ macrobo /source /dest --move
 | Option | Description |
 |---|---|
 | `--mirror` | Copy files and delete extras at destination |
-| `--purge` | Delete destination files not in source |
+| `--purge` | Only delete destination files that aren't in the source; copies nothing |
+| `--allow-mass-delete` | Let `--mirror` or `--purge` run from an empty source or delete more than half the destination |
+| `--skip-hidden` | Skip hidden files and folders (names starting with a dot); they're copied by default |
 | `--exclude-older` | Only copy if source is newer |
+| `--exclude-extra` | Don't delete extra files at destination |
+| `--include-same` | Copy files even if identical at destination |
+| `-c, --checksum` | When size matches but dates differ, compare samples of the contents (start, middle, end) instead of copying; identical files get the source's date, so they're checked only once |
+| `--checksum-full` | Like `--checksum`, but compare every byte (slower, certain) |
+| `--verify` | Verify copied files by comparing full SHA256 checksums |
 | `-t, --threads N` | Parallel copy threads (default: 8) |
+| `--bwlimit` | Bandwidth limit (e.g., `50M` for 50 MB/s, `0` for unlimited) |
 | `-r, --retry N` | Retries on failure (default: 3) |
 | `-w, --wait N` | Wait between retries in seconds (default: 5) |
 | `--exclude-files` | File patterns to exclude (e.g., `*.tmp *.log`) |
@@ -52,17 +63,26 @@ macrobo /source /dest --move
 | `--max-size` | Maximum file size (e.g., `100M`, `1G`) |
 | `--min-size` | Minimum file size (e.g., `1K`, `1M`) |
 | `--move` | Move files (delete source after copy) |
-| `--move-all` | Move files and directories |
-| `-l, --list, --dry-run` | List only, don't copy |
+| `--move-all` | Move files and directories (source folders are removed once empty) |
+| `-l, --list, --dry-run` | List what would be copied and deleted, without changing anything |
 | `--log PATH` | Log to file (overwrite) |
 | `--log-append PATH` | Log to file (append) |
 | `-v, --verbose` | Verbose output |
 | `-q, --quiet` | Minimal output |
+| `--progress MODE` | `bar` (default), `json`, or `none` |
+| `-s, --no-empty` | Skip empty directories |
+| `-e, --include-empty` | Include empty directories (default) |
+| `--config PATH` | Read options from a config file |
+| `--job NAME` | Run a named job from `~/.config/macrobo/<name>.conf` |
 | `--no-resume` | Disable resume for interrupted copies |
-| `--no-attributes` | Don't copy file attributes |
+| `--no-attributes` | Don't copy file attributes (timestamps and permissions) |
 | `--no-timestamps` | Don't preserve timestamps |
 | `--no-permissions` | Don't preserve POSIX permissions |
 | `--no-xattr` | Don't copy extended attributes |
+
+## Safety
+
+`--mirror` and `--purge` stop before deleting anything when the source is empty (for example, a disk that isn't mounted) or when they would delete more than half of the destination. Add `--allow-mass-delete` to go ahead. If a source folder can't be read, nothing under it is deleted at the destination.
 
 ## License
 

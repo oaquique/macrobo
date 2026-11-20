@@ -50,12 +50,20 @@ struct MacroboCommand: AsyncParsableCommand {
     var includeEmptyDirs = false
 
     @Flag(name: .customLong("mirror"),
-          help: "Mirror mode: copy files and delete extras at destination")
+          help: "Copy files and delete extras at destination")
     var mirror = false
 
     @Flag(name: .customLong("purge"),
-          help: "Delete destination files that no longer exist in source")
+          help: "Only delete destination files that aren't in the source; copies nothing")
     var purge = false
+
+    @Flag(name: .customLong("allow-mass-delete"),
+          help: "Let --mirror or --purge run from an empty source or delete more than half the destination")
+    var allowMassDelete = false
+
+    @Flag(name: .customLong("skip-hidden"),
+          help: "Skip hidden files and folders (names starting with a dot)")
+    var skipHidden = false
 
     // MARK: - File Comparison Options
 
@@ -72,23 +80,27 @@ struct MacroboCommand: AsyncParsableCommand {
     var includeSame = false
 
     @Flag(name: [.customShort("c"), .customLong("checksum")],
-          help: "Use checksum to skip files with identical content (slower scan, fewer copies)")
+          help: "When size matches but dates differ, compare samples of the contents (start, middle, end) instead of copying")
     var checksum = false
+
+    @Flag(name: .customLong("checksum-full"),
+          help: "Like --checksum, but compare every byte (slower, certain)")
+    var checksumFull = false
 
     // MARK: - Retry Options
 
     @Option(name: [.customShort("r"), .customLong("retry")],
-            help: "Number of retries on failed copies (default: 3)")
+            help: "Number of retries on failed copies")
     var retryCount: Int = 3
 
     @Option(name: [.customShort("w"), .customLong("wait")],
-            help: "Wait time between retries in seconds (default: 5)")
+            help: "Wait time between retries in seconds")
     var retryWait: Int = 5
 
     // MARK: - Performance Options
 
     @Option(name: [.customShort("t"), .customLong("threads")],
-            help: "Number of parallel copy threads (default: 8)")
+            help: "Number of parallel copy threads")
     var threadCount: Int = 8
 
     @Flag(name: .customLong("no-resume"),
@@ -148,7 +160,7 @@ struct MacroboCommand: AsyncParsableCommand {
     // MARK: - Copy Options
 
     @Flag(name: .customLong("no-attributes"),
-          help: "Don't copy file attributes")
+          help: "Don't copy file attributes (timestamps and permissions)")
     var noAttributes = false
 
     @Flag(name: .customLong("no-timestamps"),
@@ -181,7 +193,7 @@ struct MacroboCommand: AsyncParsableCommand {
     // MARK: - Dry Run
 
     @Flag(name: [.customShort("l"), .customLong("list"), .customLong("dry-run")],
-          help: "List only - don't actually copy (dry run)")
+          help: "List what would be copied and deleted, without changing anything")
     var dryRun = false
 
     // MARK: - Run
@@ -231,12 +243,15 @@ struct MacroboCommand: AsyncParsableCommand {
         options.includeEmptyDirectories = !skipEmptyDirs
         if mirror { options.mirror = true }
         if purge { options.purge = true }
+        if allowMassDelete { options.allowMassDelete = true }
+        if skipHidden { options.skipHidden = true }
 
         // Comparison options
         if excludeOlder { options.excludeOlder = true }
         if excludeExtra { options.excludeExtra = true }
         if includeSame { options.includeSame = true }
         if checksum { options.checksum = true }
+        if checksumFull { options.checksumFull = true }
 
         // Retry options
         options.retryCount = retryCount
@@ -295,15 +310,21 @@ struct MacroboCommand: AsyncParsableCommand {
         options.progressMode = resolvedProgressMode
 
         // Create components
+        // JSON mode keeps stdout pure JSON: the logger's console lines are suppressed
+        // (errors still go to stderr, and everything still goes to the log file)
         let logger = Logger(
             logFile: options.logFile,
             append: options.appendLog,
-            verbose: options.verbose,
-            quiet: options.quiet
+            verbose: options.verbose && resolvedProgressMode != .json,
+            quiet: options.quiet || resolvedProgressMode == .json
         )
-        // In verbose mode, suppress progress bar (file-by-file output is shown instead)
+        // In verbose mode, suppress the live display (file-by-file output is shown instead)
         let suppressProgress = options.quiet || options.verbose || resolvedProgressMode == .none
-        let progress = ProgressReporter(quiet: suppressProgress, mode: resolvedProgressMode)
+        let progress = ProgressReporter(
+            quiet: suppressProgress,
+            mode: resolvedProgressMode,
+            showSteps: !options.quiet
+        )
         let engine = CopyEngine(options: options, logger: logger, progress: progress)
 
         // Print header

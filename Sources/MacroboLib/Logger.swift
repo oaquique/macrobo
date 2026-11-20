@@ -182,8 +182,7 @@ public actor Logger {
             let msg = "SKIP: \(formatTruncate(source.lastPathComponent, maxWidth: 35)) (\(reason))\(progress)"
             debug(msg)
         case .deleted(let path):
-            let msg = "DEL: \(formatTruncate(path.lastPathComponent, maxWidth: 50))"
-            debug(msg)
+            debug("DELETE: \(path.path)")
         case .failed(let path, let error):
             processedFiles += 1
             clearProgressLine()
@@ -192,8 +191,7 @@ public actor Logger {
             let msg = "MKDIR: \(formatTruncate(path.path, maxWidth: 50))"
             debug(msg)
         case .directoryDeleted(let path):
-            let msg = "RMDIR: \(formatTruncate(path.lastPathComponent, maxWidth: 50))"
-            debug(msg)
+            debug("RMDIR: \(path.path)")
         }
     }
 
