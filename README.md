@@ -69,7 +69,7 @@ macrobo /source /dest --move
 | `--log-append PATH` | Log to file (append) |
 | `-v, --verbose` | Verbose output |
 | `-q, --quiet` | Minimal output |
-| `--progress MODE` | `bar` (default), `json`, or `none` |
+| `--progress MODE` | `bar` (default), `json`, or `none`. When the output goes to a file or a pipe, `bar` writes only finished lines, with no live display |
 | `-s, --no-empty` | Skip empty directories |
 | `-e, --include-empty` | Include empty directories (default) |
 | `--config PATH` | Read options from a config file |
@@ -81,6 +81,8 @@ macrobo /source /dest --move
 | `--no-xattr` | Don't copy extended attributes |
 
 ## Safety
+
+macrobo stops before listing anything when it can't write to the destination, for example the leftover folder of a share that isn't mounted, instead of failing on every file.
 
 `--mirror` and `--purge` stop before deleting anything when the source is empty (for example, a disk that isn't mounted) or when they would delete more than half of the destination. Add `--allow-mass-delete` to go ahead. If a source folder can't be read, nothing under it is deleted at the destination.
 

@@ -53,4 +53,24 @@ enum VolumeInfo {
         }
         return nil
     }
+
+    /// Why files can't be created in the folder at `path` ("Permission denied"), or nil if they can
+    static func writeProblem(at path: String) -> String? {
+        access(path, W_OK | X_OK) == 0 ? nil : String(cString: strerror(errno))
+    }
+
+    /// True when `path` sits in a plain folder under /Volumes rather than on a mounted drive or
+    /// share: a mount point left behind after its share was unmounted (or never mounted)
+    static func isUnderUnmountedVolumeFolder(_ path: String, volumesRoot: String = "/Volumes") -> Bool {
+        let standardized = (path as NSString).standardizingPath
+        guard standardized.hasPrefix(volumesRoot + "/") else { return false }
+        let rest = standardized.dropFirst(volumesRoot.count + 1)
+        guard let name = rest.split(separator: "/").first else { return false }
+        let top = volumesRoot + "/" + name
+        var volumes = stat(), folder = stat()
+        guard stat(volumesRoot, &volumes) == 0, stat(top, &folder) == 0,
+              (folder.st_mode & S_IFMT) == S_IFDIR else { return false }
+        // A mounted volume has its own device; a leftover folder shares /Volumes' device
+        return folder.st_dev == volumes.st_dev
+    }
 }

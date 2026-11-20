@@ -112,7 +112,14 @@ public enum MacroboError: Error, LocalizedError {
     /// The source or destination exists but can't be opened (e.g. a share that denies access)
     case cannotOpen(role: String, path: String, reason: String, networkType: String?)
     /// The destination couldn't be created
-    case cannotCreateDestination(path: String, reason: String)
+    case cannotCreateDestination(path: String, reason: String, unmountedVolume: Bool)
+    /// The destination exists, but files can't be created in it
+    case cannotWriteDestination(path: String, reason: String, unmountedVolume: Bool)
+    /// One file couldn't be written at the destination, or read at the source
+    case cannotCopyTo(path: String, reason: String)
+    case cannotRead(path: String, reason: String)
+    /// A folder couldn't be created at the destination
+    case cannotCreateFolder(path: String, reason: String)
     /// A mirror or purge would delete too much; nothing was deleted
     case massDeleteBlocked(String)
     case copyFailed(String, Error)
@@ -121,6 +128,8 @@ public enum MacroboError: Error, LocalizedError {
     case invalidRetryCount(Int)
     case permissionDenied(String)
     case fileLocked(String)
+
+    private static let unmountedHint = "\nIt's a folder on this Mac, not a mounted drive or share. Mount it and try again."
 
     public var errorDescription: String? {
         switch self {
@@ -135,8 +144,16 @@ public enum MacroboError: Error, LocalizedError {
                 message += "\nremount the share and try again."
             }
             return message
-        case .cannotCreateDestination(let path, let reason):
-            return "Can't create the destination \(path): \(reason)"
+        case .cannotCreateDestination(let path, let reason, let unmountedVolume):
+            return "Can't create the destination \(path): \(reason)" + (unmountedVolume ? Self.unmountedHint : "")
+        case .cannotWriteDestination(let path, let reason, let unmountedVolume):
+            return "Can't write to the destination \(path): \(reason)" + (unmountedVolume ? Self.unmountedHint : "")
+        case .cannotCopyTo(let path, let reason):
+            return "Can't copy to \(path): \(reason)"
+        case .cannotRead(let path, let reason):
+            return "Can't read \(path): \(reason)"
+        case .cannotCreateFolder(let path, let reason):
+            return "Can't create the folder \(path): \(reason)"
         case .massDeleteBlocked(let message):
             return message
         case .copyFailed(let path, let error):

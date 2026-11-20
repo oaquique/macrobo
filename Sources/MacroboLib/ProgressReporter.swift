@@ -55,7 +55,7 @@ public actor ProgressReporter {
             if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 {
                 cachedTerminalWidth = Int(ws.ws_col)
             } else if cachedTerminalWidth == 0 {
-                cachedTerminalWidth = 120
+                cachedTerminalWidth = 80
             }
             lastWidthCheck = now
         }
@@ -79,6 +79,11 @@ public actor ProgressReporter {
 
     /// Whether finished steps and other static lines print (bar and none modes, unless --quiet)
     private let showSteps: Bool
+
+    /// Live lines (spinners, the copy frame) need a terminal. When the output goes to a file or
+    /// a pipe, only finished lines are written, as the screen shows them once the run ends.
+    private let isTerminal = isatty(STDOUT_FILENO) != 0
+    private var live: Bool { !quiet && isTerminal }
 
     /// - Parameters:
     ///   - quiet: suppresses the live display (spinner lines, copy bars)
@@ -124,6 +129,7 @@ public actor ProgressReporter {
             }
         }
         let json = "{\(parts.joined(separator: ","))}\n"
+        fflush(stdout)
         json.utf8CString.withUnsafeBufferPointer { ptr in
             _ = Darwin.write(STDOUT_FILENO, ptr.baseAddress, json.utf8.count)
         }
@@ -259,11 +265,12 @@ public actor ProgressReporter {
             writeJSON(event)
             return
         }
-        guard !quiet else { return }
+        guard live else { return }
         spinnerIndex = (spinnerIndex + 1) % Self.spinnerChars.count
         let line = formatStepLine(mark: String(Self.spinnerChars[spinnerIndex]), name: name, detail: detail)
         let fitted = String(line.prefix(max(1, terminalWidth - 1)))
         let buf = "\r\u{1B}[K" + fitted
+        fflush(stdout)
         buf.utf8CString.withUnsafeBufferPointer { ptr in
             _ = Darwin.write(STDOUT_FILENO, ptr.baseAddress, buf.utf8.count)
         }
@@ -277,7 +284,7 @@ public actor ProgressReporter {
             writeJSON(event)
             return
         }
-        let clear = quiet ? "" : "\r\u{1B}[K"
+        let clear = live ? "\r\u{1B}[K" : ""
         guard showSteps else {
             if !clear.isEmpty { print(clear, terminator: ""); fflush(stdout) }
             return
@@ -308,7 +315,7 @@ public actor ProgressReporter {
 
     /// Clears the progress display
     func clear() {
-        guard !quiet else { return }
+        guard live else { return }
         if displayLines > 0 {
             for _ in 0..<displayLines {
                 print("\u{1B}[A\u{1B}[2K", terminator: "")
@@ -339,6 +346,13 @@ public actor ProgressReporter {
             return elapsed
         }
         guard !quiet else { return elapsed }
+        guard isTerminal else {
+            // No live frame was drawn: just the final total, as the screen ends up showing it
+            print(formatTotalLine(now: now))
+            print("")
+            fflush(stdout)
+            return elapsed
+        }
 
         // Clear the entire multi-line progress display
         if displayLines > 0 {
@@ -362,7 +376,7 @@ public actor ProgressReporter {
     // MARK: - Display Rendering
 
     private func updateDisplay() {
-        guard !quiet, totalFiles > 0 else { return }
+        guard live, totalFiles > 0 else { return }
 
         let now = Date()
 
@@ -410,9 +424,35 @@ public actor ProgressReporter {
         displayLines = frameSize
 
         // Write atomically via file descriptor to bypass Swift print buffering
+        fflush(stdout)
         buf.utf8CString.withUnsafeBufferPointer { ptr in
             _ = Darwin.write(STDOUT_FILENO, ptr.baseAddress, buf.utf8.count)
         }
+    }
+
+    /// Tests: lay lines out for this terminal width
+    func useTerminalWidth(_ width: Int) {
+        cachedTerminalWidth = width
+        lastWidthCheck = .distantFuture
+    }
+
+    /// Tests: a copy in progress, as the display would show it
+    func simulate(totalFiles: Int, completed: Int, bytes: UInt64) {
+        self.totalFiles = totalFiles
+        self.totalBytes = bytes * 2
+        self.completedFiles = completed
+        self.completedBytes = bytes
+    }
+
+    /// Cells in the progress bars: 20 when there's room. On a narrow terminal (or with 1,000+
+    /// files, whose counters are wider) the bar narrows, down to 5, so every line keeps its
+    /// size and time left within width - 1 columns. The copying and total lines share it.
+    private var barCells: Int {
+        let full = 20
+        let sample = String(format: "%@ %@ | %@ | %@ | %@", "100%", brailleBar(percent: 0, width: full),
+                            formatSpeed(0), formatSize(0), "00m00s")
+        let overflow = counterWidth + 1 + 10 + 1 + sample.count - (terminalWidth - 1)
+        return overflow > 0 ? max(5, full - overflow) : full
     }
 
     /// Returns the width needed for the counter based on total files
@@ -439,20 +479,20 @@ public actor ProgressReporter {
 
         // Calculate space for filename (counter + space + name + space + stats)
         let usedWidth = counterWidth + 1 + stats.count + 1
-        let nameWidth = max(10, terminalWidth - usedWidth)
+        let nameWidth = max(10, terminalWidth - 1 - usedWidth)
         let truncatedName = formatTruncate(completed.name, maxWidth: nameWidth, pad: true)
 
         return "\(counter) \(truncatedName) \(stats)"
     }
 
-    private func formatActiveLine(_ progress: FileProgress, now: Date) -> String {
+    func formatActiveLine(_ progress: FileProgress, now: Date) -> String {
         let counter = formatCounter(progress.index)
 
         if progress.isSyncing {
             // Show syncing status instead of progress bar
             let stats = "Syncing to disk..."
             let usedWidth = counterWidth + 1 + stats.count + 1
-            let nameWidth = max(10, terminalWidth - usedWidth)
+            let nameWidth = max(10, terminalWidth - 1 - usedWidth)
             let truncatedName = formatTruncate(progress.fileName, maxWidth: nameWidth, pad: true)
             return "\(counter) \(truncatedName) \(stats)"
         }
@@ -464,20 +504,20 @@ public actor ProgressReporter {
         let sizeStr = formatSize(progress.copiedBytes)
         let etaStr = formatDuration(progress.eta(at: now), compact: true)
 
-        let bar = brailleBar(percent: progress.percent)
+        let bar = brailleBar(percent: progress.percent, width: barCells)
 
         // Fixed-width stats section
         let stats = String(format: "%@ %@ | %@ | %@ | %@", pct, bar, speedStr, sizeStr, etaStr)
 
         // Calculate space for filename
         let usedWidth = counterWidth + 1 + stats.count + 1
-        let nameWidth = max(10, terminalWidth - usedWidth)
+        let nameWidth = max(10, terminalWidth - 1 - usedWidth)
         let truncatedName = formatTruncate(progress.fileName, maxWidth: nameWidth, pad: true)
 
         return "\(counter) \(truncatedName) \(stats)"
     }
 
-    private func formatTotalLine(now: Date) -> String {
+    func formatTotalLine(now: Date) -> String {
         let counter = formatCounter(completedFiles)
         let totalPercent = totalFiles > 0 ? Int(Double(completedFiles) / Double(totalFiles) * 100) : 0
         let pct = String(format: "%3d%%", totalPercent)
@@ -494,14 +534,14 @@ public actor ProgressReporter {
             etaStr = formatDuration(remaining, compact: true)
         }
 
-        let bar = brailleBar(percent: totalPercent)
+        let bar = brailleBar(percent: totalPercent, width: barCells)
 
         // Fixed-width stats section
         let stats = String(format: "%@ %@ | %@ | %@ | %@", pct, bar, speedStr, sizeStr, etaStr)
 
         // Calculate space for label
         let usedWidth = counterWidth + 1 + stats.count + 1
-        let nameWidth = max(10, terminalWidth - usedWidth)
+        let nameWidth = max(10, terminalWidth - 1 - usedWidth)
         let paddedLabel = formatTruncate("Total", maxWidth: nameWidth, pad: true)
 
         return "\(counter) \(paddedLabel) \(stats)"

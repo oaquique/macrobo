@@ -159,7 +159,7 @@ public struct CopyResult {
         if !errors.isEmpty {
             lines.append(" Errors:")
             for (path, error) in errors.prefix(10) {
-                lines.append("   \(path): \(error.localizedDescription)")
+                lines.append("   " + Self.failureText(path: path, error: error))
             }
             if errors.count > 10 {
                 lines.append("   ... and \(formatCount(errors.count - 10, "more error"))")
@@ -169,6 +169,12 @@ public struct CopyResult {
 
         lines.append(separator)
         return lines.joined(separator: "\n")
+    }
+
+    /// One failure for the screen and the log. macrobo's own errors already name their full
+    /// path ("Can't copy to /a/b: Permission denied"); anything else gets the path in front.
+    public static func failureText(path: String, error: Error) -> String {
+        error is MacroboError ? error.localizedDescription : "\(path): \(error.localizedDescription)"
     }
 
     /// Records a file operation result

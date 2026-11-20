@@ -158,6 +158,12 @@ public actor CopyEngine {
         let path = options.destination.path
         switch VolumeInfo.directoryProblem(at: path) {
         case nil:
+            // Stop now rather than fail on every file (an unmounted share's leftover folder)
+            if !options.dryRun, let reason = VolumeInfo.writeProblem(at: path) {
+                throw MacroboError.cannotWriteDestination(
+                    path: path, reason: reason, unmountedVolume: VolumeInfo.isUnderUnmountedVolumeFolder(path)
+                )
+            }
             return
         case .notDirectory:
             throw MacroboError.cannotOpen(role: "destination", path: path, reason: "Not a directory", networkType: nil)
@@ -172,13 +178,18 @@ public actor CopyEngine {
                 try FileManager.default.createDirectory(at: options.destination, withIntermediateDirectories: true)
                 result.record(.directoryCreated(path: options.destination))
             } catch {
-                throw MacroboError.cannotCreateDestination(path: path, reason: Self.reason(for: error))
+                throw MacroboError.cannotCreateDestination(
+                    path: path, reason: Self.reason(for: error),
+                    unmountedVolume: VolumeInfo.isUnderUnmountedVolumeFolder(path)
+                )
             }
         }
     }
 
     /// The system's short reason for a file error ("Permission denied"), not Foundation's sentence
     private static func reason(for error: Error) -> String {
+        // macrobo's own wrapper: the system's reason is inside
+        if case MacroboError.copyFailed(_, let inner) = error { return reason(for: inner) }
         let ns = error as NSError
         if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError, underlying.domain == NSPOSIXErrorDomain {
             return String(cString: strerror(Int32(underlying.code)))
@@ -453,7 +464,7 @@ public actor CopyEngine {
         let destBase = options.destination.path
         let dryRun = options.dryRun
         let missing = ResultSlots<Bool>(count: folders.count)
-        let created = ResultSlots<Bool>(count: folders.count)
+        let created = ResultSlots<[String]>(count: folders.count)
         await runOnThread {
             parallelForEach(count: folders.count, workers: Self.walkWorkers) { i in
                 let path = destBase + folders[i]
@@ -461,22 +472,25 @@ public actor CopyEngine {
                 guard !FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else { return }
                 missing[i] = true
                 if !dryRun {
-                    created[i] = (try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)) != nil
+                    created[i] = (try? FileOperations.makeDirectories(path)) ?? []
                 }
             }
         }
         let missingFlags = missing.all
-        let createdFlags = created.all
+        let createdFolders = created.all
         for (i, folder) in folders.enumerated() where missingFlags[i] == true {
             if dryRun {
                 let path = String(folder.dropFirst())
                 await progress.wouldChange("copy", path: path, folder: true)
                 await logger.writeLogOnly("  WOULD COPY: \(path)/ (folder)")
                 result.wouldCopyFolders += 1
-            } else if createdFlags[i] == true {
-                let url = URL(fileURLWithPath: destBase + folder)
-                result.record(.directoryCreated(path: url))
-                await logger.logOperation(.directoryCreated(path: url))
+            } else {
+                // Parents made along the way count too, each once
+                for made in createdFolders[i] ?? [] {
+                    let url = URL(fileURLWithPath: made)
+                    result.record(.directoryCreated(path: url))
+                    await logger.logOperation(.directoryCreated(path: url))
+                }
             }
         }
     }
@@ -594,16 +608,14 @@ public actor CopyEngine {
             return .skipped(source: source, reason: .dryRun, bytes: fileSize)
         }
 
-        // Create parent directory if needed
+        // Create the parent folders if needed; each one created is counted
         let parentDir = destURL.deletingLastPathComponent()
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: parentDir.path) {
-            do {
-                try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
-                result.record(.directoryCreated(path: parentDir))
-            } catch {
-                return .failed(path: source, error: error)
+        do {
+            for folder in try FileOperations.makeDirectories(parentDir.path) {
+                result.record(.directoryCreated(path: URL(fileURLWithPath: folder)))
             }
+        } catch {
+            return .failed(path: parentDir, error: MacroboError.cannotCreateFolder(path: parentDir.path, reason: Self.reason(for: error)))
         }
 
         // Notify progress that we're starting this file (use captured size)
@@ -650,7 +662,16 @@ public actor CopyEngine {
             try? FileManager.default.removeItem(atPath: partialPath)
         }
 
-        return .failed(path: source, error: lastError ?? MacroboError.copyFailed(source.path, NSError(domain: "macrobo", code: 99)))
+        return .failed(path: destURL, error: Self.copyFailure(source: source, destination: destURL, error: lastError))
+    }
+
+    /// Names the side that failed: the source if it can't be read, otherwise the destination
+    private static func copyFailure(source: URL, destination: URL, error: Error?) -> MacroboError {
+        let reason = error.map { Self.reason(for: $0) } ?? "Unknown error"
+        if access(source.path, R_OK) != 0 {
+            return .cannotRead(path: source.path, reason: String(cString: strerror(errno)))
+        }
+        return .cannotCopyTo(path: destination.path, reason: reason)
     }
 
     // MARK: - Verifying
@@ -696,7 +717,7 @@ public actor CopyEngine {
             failed += 1
             let destination = pairs[i].destination
             result.record(.failed(path: destination, error: MacroboError.copyFailed(
-                destination.lastPathComponent,
+                destination.path,
                 NSError(domain: "macrobo", code: 10, userInfo: [NSLocalizedDescriptionKey: message])
             )))
             await logger.warning("\(message): \(destination.path)")

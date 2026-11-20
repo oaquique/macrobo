@@ -172,10 +172,11 @@ public actor Logger {
             let fileName = source.lastPathComponent
             // Format: "  COPY: filename (size) [n/total]"
             let progress = totalFiles > 0 ? " [\(processedFiles)/\(totalFiles)]" : ""
-            let msg = "COPY: \(formatTruncate(fileName, maxWidth: 35)) (\(sizeStr))\(progress)"
-            debug(msg)
-            // Write full path to log file only
-            writeToFile("  COPY: \(source.lastPathComponent) -> \(dest.path) (\(sizeStr))")
+            // The screen (--verbose) gets the short line; the log gets one full line per file
+            if verbose {
+                print("  COPY: \(formatTruncate(fileName, maxWidth: 35)) (\(sizeStr))\(progress)")
+            }
+            writeToFile("  COPY: \(fileName) -> \(dest.path) (\(sizeStr))\(progress)")
         case .skipped(let source, let reason, _):
             processedFiles += 1
             let progress = totalFiles > 0 ? " [\(processedFiles)/\(totalFiles)]" : ""
@@ -186,7 +187,7 @@ public actor Logger {
         case .failed(let path, let error):
             processedFiles += 1
             clearProgressLine()
-            self.error("\(formatTruncate(path.lastPathComponent, maxWidth: 30)): \(error.localizedDescription)")
+            self.error(CopyResult.failureText(path: path.path, error: error))
         case .directoryCreated(let path):
             let msg = "MKDIR: \(formatTruncate(path.path, maxWidth: 50))"
             debug(msg)

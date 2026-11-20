@@ -55,6 +55,31 @@ public struct FileOperations {
         return partialSize
     }
 
+    /// Creates a folder and any missing parents, one level at a time, and returns the folders
+    /// this call created. Safe on several threads at once: mkdir succeeds for exactly one of
+    /// them, so each new folder is reported once (a folder that appears meanwhile isn't counted).
+    static func makeDirectories(_ path: String) throws -> [String] {
+        var missing: [String] = []
+        var dir = (path as NSString).standardizingPath
+        while !dir.isEmpty, dir != "/", !FileManager.default.fileExists(atPath: dir) {
+            missing.append(dir)
+            dir = (dir as NSString).deletingLastPathComponent
+        }
+        var created: [String] = []
+        for folder in missing.reversed() {
+            let result = URL(fileURLWithPath: folder).withUnsafeFileSystemRepresentation { fs -> Int32 in
+                guard let fs else { return -1 }
+                return mkdir(fs, 0o777)
+            }
+            if result == 0 {
+                created.append(folder)
+            } else if errno != EEXIST {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+        }
+        return created
+    }
+
     /// Attempts an APFS clone. Returns true if successful, false if fallback needed.
     public static func tryCloneFile(from source: URL, to destination: URL) -> Bool {
         let fm = FileManager.default
