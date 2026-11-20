@@ -46,6 +46,22 @@ final class ScanCounter: @unchecked Sendable {
     }
 }
 
+/// Paths gathered by worker threads
+final class PathCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+
+    func add(_ path: String) {
+        lock.lock(); defer { lock.unlock() }
+        items.append(path)
+    }
+
+    var paths: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return items
+    }
+}
+
 /// Fixed-size result buffer written by the workers at distinct indices
 private final class VerdictBuffer: @unchecked Sendable {
     let pointer: UnsafeMutablePointer<CompareVerdict>
@@ -68,6 +84,7 @@ private final class VerdictBuffer: @unchecked Sendable {
 }
 
 /// Decides which source files need copying, using one metadata call per destination file
+/// (two for a skipped file: the second looks for a leftover partial file)
 /// and running the comparisons in parallel (each one is a network round trip on NFS/SMB).
 enum DestinationComparator {
     /// Number of concurrent metadata lookups during the scan
@@ -124,7 +141,8 @@ enum DestinationComparator {
         destinationBase: String,
         settings: CompareSettings,
         workerCount: Int = defaultWorkerCount,
-        counter: ScanCounter
+        counter: ScanCounter,
+        leftovers: PathCollector? = nil
     ) async -> [CompareVerdict] {
         let total = candidates.count
         guard total > 0 else { return [] }
@@ -143,12 +161,15 @@ enum DestinationComparator {
                         var toCopy = 0
                         for index in range {
                             let file = candidates[index]
-                            let result = verdict(
-                                for: file,
-                                destinationPath: destinationBase + file.relativePath,
-                                settings: settings
-                            )
+                            let destinationPath = destinationBase + file.relativePath
+                            let result = verdict(for: file, destinationPath: destinationPath, settings: settings)
                             buffer.pointer[index] = result
+                            // A skipped file is complete at the destination, so a partial file
+                            // beside it is left over from an interrupted copy
+                            if result == .skip, let leftovers,
+                               let partial = FileOperations.leftoverPartial(forDestination: destinationPath) {
+                                leftovers.add(partial)
+                            }
                             if result == .copy { toCopy += 1 }
                         }
                         counter.finish(count: range.count, toCopy: toCopy)

@@ -84,6 +84,8 @@ macrobo /source /dest --move
 
 `--mirror` and `--purge` stop before deleting anything when the source is empty (for example, a disk that isn't mounted) or when they would delete more than half of the destination. Add `--allow-mass-delete` to go ahead. If a source folder can't be read, nothing under it is deleted at the destination.
 
+An interrupted copy leaves a `.macrobo-partial` file beside the destination file, and the next run resumes it, unless the source changed after the partial file was written. Then the copy starts over, so old and new bytes are never mixed. When a later run finds the destination file already complete, it removes the leftover partial file. A partial file written to in the last 10 minutes is left alone, in case another copy is still writing it.
+
 ## License
 
 [MIT](LICENSE)

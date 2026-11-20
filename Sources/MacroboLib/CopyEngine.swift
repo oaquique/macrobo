@@ -39,6 +39,9 @@ public actor CopyEngine {
     private var result = CopyResult()
     private let resolvedSourcePath: String
     private let resolvedDestPath: String
+    /// Leftover partial files a dry run would remove (relative paths), so the destination
+    /// check doesn't list them a second time as extras
+    private var dryRunLeftovers: [String] = []
 
     /// Concurrent directory listings and metadata lookups (network round trips)
     private static let walkWorkers = 16
@@ -290,11 +293,13 @@ public actor CopyEngine {
             }
             return (text, ["checked": s.completed, "total": total, "to_copy": s.toCopy])
         }
+        let leftovers = PathCollector()
         let verdicts = await DestinationComparator.compareAll(
             candidates,
             destinationBase: options.destination.path,
             settings: settings,
-            counter: counter
+            counter: counter,
+            leftovers: leftovers
         )
 
         var toCopy: [FileInfo] = []
@@ -316,16 +321,68 @@ public actor CopyEngine {
         )
 
         if !toChecksum.isEmpty {
-            toCopy += await checksumPass(toChecksum)
+            toCopy += await checksumPass(toChecksum, leftovers: leftovers)
             // Keep the copy order stable (source order)
             toCopy.sort { $0.relativePath < $1.relativePath }
         }
+        await removeLeftoverPartials(leftovers.paths.sorted())
         return toCopy
+    }
+
+    /// Removes partial files left by interrupted copies of files now complete at the
+    /// destination. A file that is copied again replaces its own partial file instead.
+    private func removeLeftoverPartials(_ paths: [String]) async {
+        guard !paths.isEmpty else { return }
+        let root = options.destination.path
+        if options.dryRun {
+            for path in paths {
+                let relative = String(path.dropFirst(root.count + 1))
+                await progress.wouldChange("delete", path: relative)
+                await logger.writeLogOnly("  WOULD DELETE: \(relative) (leftover partial file)")
+            }
+            result.wouldRemoveLeftovers = paths.count
+            dryRunLeftovers = paths.map { String($0.dropFirst(root.count)) }
+            return
+        }
+
+        let counts = LiveCounts(slots: 1)
+        let start = Date()
+        let ticker = startStep(id: "remove_leftovers", name: "Removing leftovers") {
+            let done = counts.get(0)
+            return ("\(formatCount(done)) of \(formatCount(paths.count, "partial file"))", ["removed": done, "total": paths.count])
+        }
+        let failures = ResultSlots<String>(count: paths.count)
+        await runOnThread {
+            parallelForEach(count: paths.count, workers: Self.walkWorkers) { i in
+                do {
+                    try FileManager.default.removeItem(atPath: paths[i])
+                    counts.add(0)
+                } catch {
+                    if (error as NSError).code == NSFileNoSuchFileError { counts.add(0); return }
+                    failures[i] = Self.reason(for: error)
+                }
+            }
+        }
+        var removed = 0
+        for (i, reason) in failures.all.enumerated() {
+            if let reason {
+                await logger.warning("Couldn't remove the leftover partial file \(paths[i]): \(reason)")
+            } else {
+                removed += 1
+                await logger.writeLogOnly("  DELETE: \(paths[i]) (leftover partial file)")
+            }
+        }
+        var detail = "\(formatCount(removed, "partial file")) from interrupted copies"
+        if removed < paths.count { detail += ", \(formatCount(paths.count - removed)) failed" }
+        await finishStep(
+            ticker, id: "remove_leftovers", name: "Removed leftovers", detail: detail,
+            counts: ["removed": removed, "failed": paths.count - removed], since: start
+        )
     }
 
     /// Compares contents of same-size files on several threads (samples, or every byte with
     /// --checksum-full). Returns the files whose contents changed.
-    private func checksumPass(_ items: [(file: FileInfo, skipIfDifferent: Bool)]) async -> [FileInfo] {
+    private func checksumPass(_ items: [(file: FileInfo, skipIfDifferent: Bool)], leftovers: PathCollector) async -> [FileInfo] {
         let total = items.count
         let totalBytes = items.reduce(0) { $0 + Int($1.file.size) }
         let counts = LiveCounts(slots: 3) // checked, changed, bytes checked
@@ -355,6 +412,9 @@ public actor CopyEngine {
                 )
                 if identical, stampTimes, let sourceDate = item.file.modificationDate {
                     try? FileManager.default.setAttributes([.modificationDate: sourceDate], ofItemAtPath: destURL.path)
+                }
+                if identical, let partial = FileOperations.leftoverPartial(forDestination: destURL.path) {
+                    leftovers.add(partial)
                 }
                 let copy = !identical && !item.skipIfDifferent
                 changed[i] = copy
@@ -466,8 +526,9 @@ public actor CopyEngine {
         // Begin progress display phase - suppress inline errors
         await logger.beginProgressDisplay()
         let copiedPairs = await copyFiles(filesToCopy)
-        // End progress display - flush any buffered errors
-        await progress.finish()
+        // The summary's speed uses the copy line's own time, so the two always agree
+        result.copyDuration = await progress.finish()
+        // Flush any buffered errors
         await logger.endProgressDisplay()
         return copiedPairs
     }
@@ -667,6 +728,7 @@ public actor CopyEngine {
     private func checkDestination(_ source: SourceEnumeration) async -> DestinationCheck {
         var known = source.directoryRelativePaths
         for file in source.files { known.insert(file.relativePath) }
+        known.formUnion(dryRunLeftovers)
         let knownPaths = known
         let unreadablePrefixes = source.unreadableDirectories.map { $0.relativePath + "/" }
         let sourceRoot = resolvedSourcePath

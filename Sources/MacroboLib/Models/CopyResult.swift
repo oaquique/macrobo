@@ -52,6 +52,11 @@ public struct CopyResult {
     public var wouldDeleteFiles = 0
     public var wouldDeleteFolders = 0
     public var unchangedFiles = 0
+    /// Leftover partial files from interrupted copies a run would remove
+    public var wouldRemoveLeftovers = 0
+
+    /// Time spent copying, for the speed; nil when nothing was copied
+    public var copyDuration: TimeInterval?
 
     public init() {}
 
@@ -65,10 +70,11 @@ public struct CopyResult {
         (endTime ?? Date()).timeIntervalSince(startTime)
     }
 
-    /// Copy speed in bytes per second
+    /// Copy speed in bytes per second, over the copying alone (not listing or checksumming),
+    /// so it matches the speed on the copy progress line
     public var bytesPerSecond: Double {
-        guard duration > 0 else { return 0 }
-        return Double(bytesCopied) / duration
+        guard let copyDuration, copyDuration > 0 else { return 0 }
+        return Double(bytesCopied) / copyDuration
     }
 
     /// Formatted summary string
@@ -101,6 +107,22 @@ public struct CopyResult {
             if showsCopies {
                 lines.append(row("Unchanged", formatCount(unchangedFiles, "file")))
             }
+            if wouldRemoveLeftovers > 0 {
+                lines.append(row("Would remove", formatCount(wouldRemoveLeftovers, "leftover partial file")))
+            }
+            lines.append("")
+        } else if !showsCopies {
+            // Delete only (--purge): nothing is copied, so copy rows would only show zeros
+            if directoriesCreated > 0 {
+                lines.append(row("Directories created", formatCount(directoriesCreated)))
+            }
+            lines.append(row("Directories deleted", formatCount(directoriesDeleted)))
+            lines.append(row("Files deleted", formatCount(filesDeleted)))
+            if filesFailed > 0 {
+                lines.append(row("Files failed", formatCount(filesFailed)))
+            }
+            lines.append("")
+            lines.append(row("Duration", formatDuration(duration)))
             lines.append("")
         } else {
             // Directories section
@@ -126,7 +148,9 @@ public struct CopyResult {
             if bytesSkipped > 0 {
                 lines.append(row("Bytes skipped", formatBytes(bytesSkipped)))
             }
-            lines.append(row("Speed", "\(formatBytes(UInt64(bytesPerSecond)))/s"))
+            if bytesCopied > 0 {
+                lines.append(row("Speed", "\(formatBytes(UInt64(bytesPerSecond)))/s"))
+            }
             lines.append(row("Duration", formatDuration(duration)))
             lines.append("")
         }

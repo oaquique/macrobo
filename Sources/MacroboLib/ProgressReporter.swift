@@ -319,10 +319,13 @@ public actor ProgressReporter {
         fflush(stdout)
     }
 
-    /// Finishes progress display - clears multi-line display and shows clean final total
-    func finish() {
+    /// Finishes progress display - clears multi-line display and shows clean final total.
+    /// Returns the time spent copying, which the total line's speed is based on.
+    @discardableResult
+    func finish() -> TimeInterval {
+        let now = Date()
+        let elapsed = now.timeIntervalSince(startTime)
         if mode == .json {
-            let elapsed = Date().timeIntervalSince(startTime)
             let overallSpeed = elapsed > 0.001 ? Double(completedBytes) / elapsed : 0
             writeJSON([
                 "event": "summary" as String,
@@ -333,9 +336,9 @@ public actor ProgressReporter {
                 "speed": overallSpeed,
                 "elapsed": elapsed
             ])
-            return
+            return elapsed
         }
-        guard !quiet else { return }
+        guard !quiet else { return elapsed }
 
         // Clear the entire multi-line progress display
         if displayLines > 0 {
@@ -349,10 +352,11 @@ public actor ProgressReporter {
         // Print just the separator and final total line
         let separator = String(repeating: "-", count: min(terminalWidth - 1, 80))
         print("\u{1B}[2K\(separator)")
-        print("\u{1B}[2K\(formatTotalLine(now: Date()))")
+        print("\u{1B}[2K\(formatTotalLine(now: now))")
         print("")
         fflush(stdout)
         displayLines = 0
+        return elapsed
     }
 
     // MARK: - Display Rendering

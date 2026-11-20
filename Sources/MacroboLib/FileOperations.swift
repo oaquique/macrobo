@@ -31,6 +31,30 @@ public struct FileOperations {
         return withUnsafeBytes(of: &copy.f_fstypename) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
     }
 
+    /// A partial file untouched this long is left over from an interrupted copy; a copy in
+    /// progress writes to its partial file all the time
+    static let leftoverPartialAge: TimeInterval = 600
+
+    /// The leftover partial file next to a destination file, or nil if there is none. Called
+    /// only for files found complete, so the partial is no longer needed.
+    static func leftoverPartial(forDestination path: String) -> String? {
+        let partial = path + partialSuffix
+        guard let attrs = DestinationComparator.destinationAttributes(atPath: partial),
+              Date().timeIntervalSince(attrs.modificationDate) > leftoverPartialAge else { return nil }
+        return partial
+    }
+
+    /// Where to resume an interrupted copy, or nil to start over. Only a partial file shorter
+    /// than the source and written after the source last changed is resumed: one started
+    /// before the source was edited holds old bytes, and appending to it would mix two versions.
+    static func resumableOffset(
+        partialSize: UInt64?, partialModified: Date?, sourceSize: UInt64, sourceModified: Date?
+    ) -> UInt64? {
+        guard let partialSize, partialSize > 0, partialSize < sourceSize,
+              let partialModified, let sourceModified, partialModified >= sourceModified else { return nil }
+        return partialSize
+    }
+
     /// Attempts an APFS clone. Returns true if successful, false if fallback needed.
     public static func tryCloneFile(from source: URL, to destination: URL) -> Bool {
         let fm = FileManager.default
@@ -83,10 +107,15 @@ public struct FileOperations {
         let partialURL = URL(fileURLWithPath: partialPath)
         var resumeOffset: UInt64 = 0
 
-        if options.resumePartial && fm.fileExists(atPath: partialPath) {
+        if fm.fileExists(atPath: partialPath) {
             let partialAttrs = try? fm.attributesOfItem(atPath: partialPath)
-            if let partialSize = partialAttrs?[.size] as? UInt64, partialSize < sourceSize {
-                resumeOffset = partialSize
+            if options.resumePartial, let offset = resumableOffset(
+                partialSize: partialAttrs?[.size] as? UInt64,
+                partialModified: partialAttrs?[.modificationDate] as? Date,
+                sourceSize: sourceSize,
+                sourceModified: sourceAttrs[.modificationDate] as? Date
+            ) {
+                resumeOffset = offset
             } else {
                 try? fm.removeItem(atPath: partialPath)
             }
