@@ -39,6 +39,10 @@ public struct CopyResult {
     public var bytesCopied: UInt64 = 0
     public var bytesSkipped: UInt64 = 0
     public var errors: [(path: String, error: Error)] = []
+    /// Source files not copied because another one has the same name at the destination
+    public var nameClashes: [NameClash] = []
+    /// Why those names clash ("the destination ignores capital letters, so only one fits")
+    public var nameClashReason = ""
     public var startTime: Date = Date()
     public var endTime: Date?
 
@@ -107,6 +111,9 @@ public struct CopyResult {
             if showsCopies {
                 lines.append(row("Unchanged", formatCount(unchangedFiles, "file")))
             }
+            if !nameClashes.isEmpty {
+                lines.append(row("Name clashes", "\(formatCount(nameClashes.count)) (would not be copied)"))
+            }
             if wouldRemoveLeftovers > 0 {
                 lines.append(row("Would remove", formatCount(wouldRemoveLeftovers, "leftover partial file")))
             }
@@ -135,6 +142,9 @@ public struct CopyResult {
             // Files section
             lines.append(row("Files copied", formatCount(filesCopied)))
             lines.append(row("Files skipped", formatCount(filesSkipped)))
+            if !nameClashes.isEmpty {
+                lines.append(row("Name clashes", "\(formatCount(nameClashes.count)) (not copied)"))
+            }
             if filesFailed > 0 {
                 lines.append(row("Files failed", formatCount(filesFailed)))
             }
@@ -152,6 +162,19 @@ public struct CopyResult {
                 lines.append(row("Speed", "\(formatBytes(UInt64(bytesPerSecond)))/s"))
             }
             lines.append(row("Duration", formatDuration(duration)))
+            lines.append("")
+        }
+
+        // Name clashes: the file left out and the one copied in its place
+        if !nameClashes.isEmpty {
+            lines.append(" Name clashes (\(nameClashReason)):")
+            for clash in nameClashes.prefix(10) {
+                lines.append("   Not copied:   " + String(clash.path.dropFirst()))
+                lines.append("   Same name as: " + String(clash.sameAs.dropFirst()))
+            }
+            if nameClashes.count > 10 {
+                lines.append("   ... and \(formatCount(nameClashes.count - 10, "more name clash", "more name clashes"))")
+            }
             lines.append("")
         }
 

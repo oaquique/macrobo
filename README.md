@@ -86,6 +86,10 @@ macrobo stops before listing anything when it can't write to the destination, fo
 
 `--mirror` and `--purge` stop before deleting anything when the source is empty (for example, a disk that isn't mounted) or when they would delete more than half of the destination. Add `--allow-mass-delete` to go ahead. If a source folder can't be read, nothing under it is deleted at the destination.
 
+**Name clashes.** Most Mac disks and SMB shares ignore capital letters, and treat `ß` and `ss`, or an accented letter stored two ways, as the same. So two source names that differ only that way, such as `Song.m4a` and `song.m4a` copied from a NAS, are one name at the destination. macrobo copies the first in alphabetical order of the full path and leaves the other out, so nothing is overwritten and every run picks the same file. Folders whose names clash merge into one; only files whose names clash are left out. The Compared line counts them, and the summary lists each file left out and the one copied in its place. `--progress json` reports each as a `name_clash` event. `--mirror` and `--purge` compare names the way the destination does, so they never delete a file that the source has under another spelling. Destinations that keep every name distinct are not affected.
+
+**Exit codes:** `0` done; `1` a file failed, or the run couldn't start; `3` done, but some files were left out for name clashes.
+
 An interrupted copy leaves a `.macrobo-partial` file beside the destination file, and the next run resumes it, unless the source changed after the partial file was written. Then the copy starts over, so old and new bytes are never mixed. When a later run finds the destination file already complete, it removes the leftover partial file. A partial file written to in the last 10 minutes is left alone, in case another copy is still writing it.
 
 ## License

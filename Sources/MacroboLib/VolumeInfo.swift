@@ -28,6 +28,13 @@ enum VolumeInfo {
         return bestMatch.type
     }
 
+    /// The file system type ("apfs", "hfs", "smbfs", ...) of the volume holding `path`
+    static func fileSystemType(of path: String) -> String? {
+        var fs = statfs()
+        guard statfs(path, &fs) == 0 else { return nil }
+        return withUnsafeBytes(of: &fs.f_fstypename) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+    }
+
     enum DirectoryProblem: Equatable {
         case missing
         case notDirectory

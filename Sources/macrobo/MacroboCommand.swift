@@ -19,6 +19,13 @@ struct MacroboCommand: AsyncParsableCommand {
               macrobo /source /dest --progress json
               macrobo --job photos-backup
               macrobo --config ~/sync.conf --mirror
+
+            Name clashes: when two source names are one name at the destination (a Mac disk
+            ignores capital letters, so "Song.m4a" and "song.m4a" clash), the first in
+            alphabetical order is copied and the other is left out and listed in the summary.
+
+            Exit codes: 0 done; 1 a file failed or the run couldn't start; 3 done, but some
+            files were left out for name clashes.
             """,
         version: BuildInfo.fullVersion
     )
@@ -347,9 +354,13 @@ struct MacroboCommand: AsyncParsableCommand {
         do {
             let result = try await engine.run()
 
-            // Exit with error code if there were failures
+            // Exit codes: 1 when any file failed; 3 when the run finished but some files were
+            // left out because their names clash at the destination; 0 otherwise
             if result.filesFailed > 0 {
                 throw ExitCode(1)
+            }
+            if !result.nameClashes.isEmpty {
+                throw ExitCode(3)
             }
         } catch let error as MacroboError {
             fputs("Error: \(error.localizedDescription)\n", stderr)

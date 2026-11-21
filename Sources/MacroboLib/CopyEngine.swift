@@ -106,13 +106,21 @@ public actor CopyEngine {
             if deletes {
                 try guardEmptySource(source)
             }
+            // How the destination compares names: two source names it sees as one can't both
+            // be copied there, and a mirror must match its files the same way
+            let matching = NameMatching.of(options.destination.path)
 
             if copies {
-                let toCopy = await compare(source.files)
+                let (candidates, clashes) = NameClashes.resolve(source.files, matching: matching)
+                let toCopy = await compare(candidates, clashes: clashes.count)
+                await reportNameClashes(clashes, matching: matching)
+                if !options.dryRun {
+                    await createFirstSpellings(source, matching: matching)
+                }
                 if options.includeEmptyDirectories {
                     await createMissingFolders(source, copying: toCopy)
                 }
-                let unchanged = source.files.count - toCopy.count
+                let unchanged = candidates.count - toCopy.count
                 if options.dryRun {
                     await listWouldCopy(toCopy, unchanged: unchanged)
                 } else if !toCopy.isEmpty {
@@ -131,7 +139,7 @@ public actor CopyEngine {
             }
 
             if deletes {
-                let extras = await checkDestination(source)
+                let extras = await checkDestination(source, matching: matching)
                 try guardMassDelete(extras)
                 if options.dryRun {
                     await listWouldDelete(extras.items)
@@ -287,7 +295,7 @@ public actor CopyEngine {
 
     /// Decides which source files need copying: a parallel metadata compare, then content
     /// checksums for same-size files when --checksum is on.
-    private func compare(_ candidates: [FileInfo]) async -> [FileInfo] {
+    private func compare(_ candidates: [FileInfo], clashes: Int = 0) async -> [FileInfo] {
         let settings = CompareSettings(
             includeSame: options.includeSame,
             checksum: options.checksum || options.checksumFull,
@@ -322,13 +330,18 @@ public actor CopyEngine {
             case .checksum(let skipIfDifferent): toChecksum.append((file, skipIfDifferent))
             }
         }
-        var detail = "\(formatCount(total, "file")), \(formatCount(toCopy.count)) to copy"
+        // Files left out for name clashes were still compared by name: count them in the total
+        var detail = "\(formatCount(total + clashes, "file")), \(formatCount(toCopy.count)) to copy"
         if !toChecksum.isEmpty {
             detail += ", \(formatCount(toChecksum.count)) to checksum"
         }
+        if clashes > 0 {
+            detail += ", \(formatCount(clashes, "name clash", "name clashes"))"
+        }
         await finishStep(
             ticker, id: "compare", name: "Compared", detail: detail,
-            counts: ["checked": total, "to_copy": toCopy.count, "to_checksum": toChecksum.count], since: start
+            counts: ["checked": total + clashes, "to_copy": toCopy.count, "to_checksum": toChecksum.count, "name_clashes": clashes],
+            since: start
         )
 
         if !toChecksum.isEmpty {
@@ -450,6 +463,34 @@ public actor CopyEngine {
     /// Creates source folders missing at the destination that no copied file will create, so
     /// empty folders are copied too (a copied file creates its own folders). Checks run in
     /// parallel: each is a network round trip on NFS/SMB.
+    /// Files left out because another source file has the same name at the destination:
+    /// recorded for the summary, each one logged, and listed by a dry run
+    private func reportNameClashes(_ clashes: [NameClash], matching: NameMatching) async {
+        guard !clashes.isEmpty else { return }
+        result.nameClashes = clashes
+        result.nameClashReason = matching.reason
+        for clash in clashes {
+            let path = String(clash.path.dropFirst())
+            let sameAs = String(clash.sameAs.dropFirst())
+            await progress.nameClash(path: path, sameAs: sameAs, dryRun: options.dryRun)
+            await logger.writeLogOnly("  NAME CLASH, not copied: \(path) (same name at the destination as \(sameAs))")
+        }
+    }
+
+    /// Where source folders' names clash at the destination they merge into one folder;
+    /// creating the alphabetically first spelling now gives it a predictable name
+    private func createFirstSpellings(_ source: SourceEnumeration, matching: NameMatching) async {
+        let destBase = options.destination.path
+        for folder in NameClashes.folderSpellings(source.directoryRelativePaths, matching: matching) {
+            guard let made = try? FileOperations.makeDirectories(destBase + folder) else { continue }
+            for path in made {
+                let url = URL(fileURLWithPath: path)
+                result.record(.directoryCreated(path: url))
+                await logger.logOperation(.directoryCreated(path: url))
+            }
+        }
+    }
+
     private func createMissingFolders(_ source: SourceEnumeration, copying toCopy: [FileInfo]) async {
         // Every folder some copied file sits in, at any depth
         var createdByCopies = Set<String>()
@@ -752,11 +793,14 @@ public actor CopyEngine {
 
     /// Walks the destination on several threads and collects what isn't in the source.
     /// Everything under an extra folder is counted, so deletion totals are complete.
-    private func checkDestination(_ source: SourceEnumeration) async -> DestinationCheck {
+    private func checkDestination(_ source: SourceEnumeration, matching: NameMatching) async -> DestinationCheck {
         var known = source.directoryRelativePaths
         for file in source.files { known.insert(file.relativePath) }
         known.formUnion(dryRunLeftovers)
-        let knownPaths = known
+        // A destination that ignores case (or accent encoding) may hold a source file under
+        // another spelling, for example inside a folder merged from two source folders:
+        // compare names the way the destination does, or that file looks extra and is deleted
+        let knownPaths = Set(known.map { matching.key($0) })
         let unreadablePrefixes = source.unreadableDirectories.map { $0.relativePath + "/" }
         let sourceRoot = resolvedSourcePath
         let destination = options.destination
@@ -797,7 +841,7 @@ public actor CopyEngine {
                             // Symlinks and other special files at the top of an extra were never
                             // copied by macrobo, so they are left alone
                             guard isDir || entry.isRegularFile else { continue }
-                            if knownPaths.contains(entry.relativePath)
+                            if knownPaths.contains(matching.key(entry.relativePath))
                                 || unreadablePrefixes.contains(where: { entry.relativePath.hasPrefix($0) || entry.relativePath + "/" == $0 })
                                 || FileManager.default.fileExists(atPath: sourceRoot + entry.relativePath) {
                                 if isDir { subdirs.append(.init(url: entry.url, relativePath: entry.relativePath, context: nil)) }

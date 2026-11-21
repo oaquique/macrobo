@@ -313,6 +313,19 @@ public actor ProgressReporter {
         line("  WOULD \(action.uppercased()): \(path)\(suffix)")
     }
 
+    /// A source file left out because another one has the same name at the destination.
+    /// JSON mode gets a "name_clash" event; a dry run lists it with the files it would copy.
+    /// A real run reports clashes in the summary instead.
+    func nameClash(path: String, sameAs: String, dryRun: Bool) {
+        if mode == .json {
+            writeJSON(["event": "name_clash", "path": path, "same_as": sameAs])
+            return
+        }
+        if dryRun {
+            line("  WOULD SKIP (name clash): \(path)")
+        }
+    }
+
     /// Clears the progress display
     func clear() {
         guard live else { return }
